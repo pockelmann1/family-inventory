@@ -58,8 +58,8 @@ flowchart LR
 | --- | --- | --- |
 | `#/` | Browse: the collection, filters, rank buttons | everyone |
 | `#/item/ITEM-0001` | One item: photos, ranking, details, own family's ranks, edit history | everyone |
-| `#/family` | My family: your top 10 (drag to reorder, add from a search of what you ranked), your family's top 10s side by side, then each family member's ranks | family members |
-| `#/results` | Results: every family's top 10s, best rank and most-wanted family per item, CSV download | admin |
+| `#/family` | My family: your top 10 (drag to reorder, add from a search of what you ranked), the family top 10 (worked out from everyone's lists: 10 points for 1st place down to 1 for 10th, added up) and each person's top 10 side by side, then each family member's ranks | family members |
+| `#/results` | Results: each family's family top 10 side by side and every person's list, best rank and most-wanted family per item, CSV download | admin |
 | `#/fill` | Add info: one item at a time, with photo-based suggestions | editors and admin |
 | `#/admin` | Admin: links, editors, who has started | admin |
 

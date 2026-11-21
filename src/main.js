@@ -746,7 +746,7 @@ function renderFamily() {
     <h1 class="page-title">${esc(fam.name)}'s family</h1>
     <p class="page-sub">Your top 10, your family's top 10s, and everything your family has ranked.</p>
     ${canRank() ? myTopHtml() : ''}
-    ${(() => { const t = familyTopsHtml(fam); return t ? `<section class="family-tops"><h2 class="section-title">Your family's top 10s</h2>${t}</section>` : ''; })()}
+    ${(() => { const t = familyTopsHtml(fam); return t ? `<section class="family-tops"><div class="top10-head"><h2 class="section-title">Your family's top 10s</h2><p class="top10-note">The family top 10 adds up everyone's lists: 1st place is worth 10 points, 10th is worth 1.</p></div>${t}</section>` : ''; })()}
     <h2 class="section-title">Everything your family ranked</h2>
     <p class="table-note">The family best is the lowest number any of you gave.</p>
     ${tableToolbar(f, (opt) => `
@@ -1026,10 +1026,49 @@ function sharedPicks(people) {
   return new Set([...count].filter(([, n]) => n > 1).map(([id]) => id));
 }
 
+// The family top 10, worked out from everyone's lists: 1st place is worth 10 points,
+// 10th is worth 1, and points add up across the family. Ties go to the item someone
+// placed higher, then to the item more people picked, then to catalog order.
+function familyTop(fam) {
+  const score = new Map();
+  for (const m of fam.members) {
+    (state.top10[String(m.id)] || []).forEach((id, k) => {
+      if (!state.byId.has(id)) return;
+      const e = score.get(id) || { id, pts: 0, best: 99, who: [] };
+      e.pts += TOP_N - k; e.best = Math.min(e.best, k + 1); e.who.push({ person: m, place: k + 1 });
+      score.set(id, e);
+    });
+  }
+  const order = (id) => state.items.indexOf(state.byId.get(id));
+  return [...score.values()]
+    .sort((a, b) => b.pts - a.pts || a.best - b.best || b.who.length - a.who.length || order(a.id) - order(b.id))
+    .slice(0, TOP_N);
+}
+
+function familyStripHtml(fam, title = 'Family top 10') {
+  const top = familyTop(fam);
+  const places = [];
+  for (let k = 0; k < TOP_N; k++) {
+    const e = top[k]; const i = e && state.byId.get(e.id);
+    const who = e && e.who.map((w) => `${w.person.id === state.me?.id ? 'You' : esc(w.person.name)} ${w.place}`).join(' · ');
+    places.push(i ? `
+        <li><a href="#/item/${esc(i.id)}">
+          <span class="ph-box">${topThumb(i)}<span class="badge">${k + 1}</span></span>
+          <span class="txt"><span class="t">${esc(i.name)}</span><span class="who">${who}</span></span>
+        </a></li>` : `
+        <li class="none"><span class="ph-box"><span class="ph"></span><span class="badge">${k + 1}</span></span><span class="t">Not enough picks yet</span></li>`);
+  }
+  return `
+    <div class="strip-wrap fam">
+      <h3 class="strip-title">${esc(title)} <span class="s">from everyone's lists</span></h3>
+      <ol class="strip">${places.join('')}</ol>
+    </div>`;
+}
+
 function familyTopsHtml(fam) {
   if (!fam.members.some((m) => (state.top10[String(m.id)] || []).length)) return '';
   const shared = sharedPicks(fam.members);
-  return `<div class="tops-compare" style="--cols:${fam.members.length}">${fam.members
+  return `<div class="tops-compare" style="--cols:${fam.members.length + 1}">${familyStripHtml(fam)}${fam.members
     .map((m) => topStripHtml(m, state.top10[String(m.id)] || [], shared)).join('')}</div>`;
 }
 
@@ -1072,7 +1111,9 @@ function renderResults() {
     <p class="page-sub">For each item: the best (lowest) rank anyone gave, which family wants it most, and each family's best rank. Ties are listed together.</p>
     ${(() => {
       const fams = state.families.map((fm) => ({ fm, html: familyTopsHtml(fm) })).filter((x) => x.html);
-      return fams.length ? `<section class="family-tops admin-tops"><h2 class="section-title">Top 10 lists</h2>${fams.map((x) => `<details class="fam-tops"><summary>${esc(x.fm.name)}'s family</summary>${x.html}</details>`).join('')}</section>` : '';
+      return fams.length ? `<section class="family-tops admin-tops"><div class="top10-head"><h2 class="section-title">Family top 10s</h2><p class="top10-note">Each family's list adds up its members' lists: 1st place is worth 10 points, 10th is worth 1.</p></div>
+        <div class="tops-compare" style="--cols:${fams.length}">${fams.map((x) => familyStripHtml(x.fm, `${x.fm.name}'s family`)).join('')}</div>
+        <h3 class="strip-title each-title">Each person's list</h3>${fams.map((x) => `<details class="fam-tops"><summary>${esc(x.fm.name)}'s family</summary>${x.html}</details>`).join('')}</section>` : '';
     })()}
     ${tableToolbar(f, (opt) => `
       <select class="select" data-f="view" aria-label="Show">${opt('ranked', 'Items anyone ranked', f.view)}${opt('multi', 'Wanted by 2 or more families', f.view)}${opt('tied', 'Tied between families', f.view)}${opt('none', 'Nobody has ranked yet', f.view)}${opt('all', 'All items', f.view)}</select>

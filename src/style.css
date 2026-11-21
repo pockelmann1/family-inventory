@@ -386,6 +386,15 @@ h1.page-title {
   .strip li.none .t { font-family: var(--sans); font-size: 13px; color: var(--faint); font-weight: 400; }
   @media (hover: hover) { .strip a:hover .t { text-decoration: underline; text-underline-offset: 3px; } }
 }
+.strip .txt { display: block; min-width: 0; }
+.strip .who { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; font-variant-numeric: lining-nums tabular-nums; }
+.strip-wrap.fam .badge { background: var(--gold); }
+.each-title { margin-top: 28px; }
+@media (min-width: 900px) {
+  .strip .txt { display: flex; flex-direction: column; gap: 3px; }
+  .strip .txt .t { -webkit-line-clamp: 1; }
+  .strip-wrap.fam .strip-title { border-bottom-width: 2px; }
+}
 .fam-tops { border-top: 1px solid var(--line); padding: 4px 0 16px; }
 .fam-tops > summary { cursor: pointer; font-family: var(--serif); font-size: 22px; font-weight: 500; padding: 10px 0; min-height: var(--tap); }
 .admin-tops .strip-wrap.me { display: block; }
