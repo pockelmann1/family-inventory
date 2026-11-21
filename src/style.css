@@ -139,40 +139,25 @@ h1.page-title {
 }
 
 /* ------------------------------------------------------------ rank buttons */
-/* Five serif numerals resting on a hairline, like lot numbers in a catalogue. The whole slot is the
-   tap target (48px tall, edge to edge across the card); the visible mark is a small disc drawn inside it.
-   Unranked: ink numeral on a soft disc in the photo-mat colour. Ranked: solid ink disc, white numeral. */
-.ranker {
-  --disc: 30px;          /* visible disc */
-  --num: 21px;           /* numeral size */
-  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 8px; max-width: 300px;
-}
+/* Option A, hairline squares: small square boxes, 1px grey hairline, sans numerals, black fill when chosen.
+   Each number's button fills its slot edge to edge (48px tall), so the tap area runs into the visible gaps;
+   the box people see is drawn by ::before inside it. */
+.ranker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 8px; max-width: 300px; }
+.card .ranker { margin-top: auto; padding-top: 10px; }
 .ranker button[data-rank]:not(.clear) {
   position: relative; isolation: isolate; height: 48px; min-width: 0; padding: 0; border: 0; background: none;
-  font-family: var(--serif); font-weight: 500; font-size: var(--num); line-height: 1; color: var(--ink);
-  font-variant-numeric: lining-nums tabular-nums; font-feature-settings: 'lnum' 1, 'tnum' 1;
-  -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  font-family: var(--sans); font-variant-numeric: tabular-nums; line-height: 1; color: var(--ink);
   display: flex; align-items: center; justify-content: center;
-  transition: color 0.2s ease;
+  -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  transition: color 0.15s ease;
 }
 .ranker button[data-rank]:not(.clear)::before {
-  content: ''; position: absolute; z-index: -1; left: 50%; top: 50%;
-  width: var(--disc); height: var(--disc); margin: calc(var(--disc) / -2) 0 0 calc(var(--disc) / -2);
-  border-radius: 50%; background: var(--tile);
-  transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  content: ''; position: absolute; z-index: -1; left: 50%; top: 50%; translate: -50% -50%;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
-/* Cormorant's figures sit a touch high in a circle; nudge the numeral down to its optical centre. */
-.ranker button[data-rank]:not(.clear) { padding-top: 0.08em; }
-@media (hover: hover) {
-  .ranker button[data-rank]:not(.clear):not(:disabled):hover::before { box-shadow: inset 0 0 0 1px var(--ink); background: #fff; }
-}
-.ranker button[data-rank]:not(.clear):active::before { transform: scale(0.92); }
-.ranker button[data-rank][aria-pressed='true']:not(.clear) { color: #fff; }
-.ranker button[data-rank][aria-pressed='true']:not(.clear)::before,
-.ranker button[data-rank][aria-pressed='true']:not(.clear):hover::before { background: var(--ink); box-shadow: none; }
-/* Keyboard focus: a ring around the disc itself, not the wide slot. */
+/* Keyboard focus: a ring around the visible box, not the wider tap slot. */
 .ranker button[data-rank]:not(.clear):focus-visible { outline: none; }
-.ranker button[data-rank]:not(.clear):focus-visible::before { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--ink); }
+.ranker button[data-rank]:not(.clear):focus-visible::before { outline: 2px solid var(--ink); outline-offset: 2px; }
 .ranker button:disabled { cursor: progress; opacity: 0.5; }
 .ranker .label { grid-column: 1 / -1; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 6px; }
 .ranker .label .hint::before { content: '\00b7\00a0'; }
@@ -184,18 +169,39 @@ h1.page-title {
 }
 @media (hover: hover) { .ranker .clear:hover { color: var(--ink); text-decoration-color: currentColor; } }
 .ranker .clear.off { visibility: hidden; }
-/* Card: the row sits on a hairline, quiet beneath the caption. */
-.card .ranker { border-top: 1px solid var(--line); padding-top: 6px; margin-top: auto; }
 .card .ranker .clear { margin-top: -4px; }
-@media (min-width: 700px) { .ranker { --disc: 34px; --num: 22px; } }
-/* Item page: the same marks, a size up. */
-.ranker.large { --disc: 46px; --num: 27px; max-width: 380px; }
+.ranker.large { max-width: 380px; }
 .ranker.large button[data-rank]:not(.clear) { height: 56px; }
 .ranker.large .clear { font-size: 14px; }
+/* Phone/tablet item page: label on the left, numbers on the right, in the fixed bottom bar. */
+@media (max-width: 899px) {
+  .rank-box .ranker.large { grid-template-columns: 6.4em repeat(5, minmax(0, 1fr)); align-items: center; max-width: 560px; margin: 0 auto; }
+  .rank-box .ranker.large .label { grid-column: auto; margin: 0 8px 0 0; font-size: 12px; line-height: 1.3; letter-spacing: 0.08em; color: var(--ink); }
+  .rank-box .ranker.large .label .hint { display: block; text-transform: none; letter-spacing: 0; font-size: 12px; margin-top: 2px; color: var(--muted); }
+  .rank-box .ranker.large .label .hint::before { content: none; }
+  .rank-box .ranker.large button[data-rank]:not(.clear) { height: 52px; }
+  .rank-box .ranker.large .clear { grid-column: 1; grid-row: 2; height: var(--tap); margin: -6px 0 -8px; padding: 0; font-size: 13px; text-align: left; }
+}
 @media (prefers-reduced-motion: reduce) {
   .ranker button[data-rank], .ranker button[data-rank]::before { transition: none; }
-  .ranker button[data-rank]:active::before { transform: none; }
 }
+
+/* A: square boxes. Side = the slot minus a 6px gap, capped by --box. */
+.ranker { --box: 40px; --gap: 6px; }
+.ranker button[data-rank]:not(.clear) { font-size: 15px; }
+.ranker button[data-rank]:not(.clear)::before {
+  width: min(calc(100% - var(--gap)), var(--box)); aspect-ratio: 1; box-sizing: border-box;
+  border: 1px solid #c4c4c4; background: #fff;
+}
+@media (hover: hover) { .ranker button[data-rank]:not(.clear):not(:disabled):hover::before { border-color: var(--ink); } }
+.ranker button[data-rank]:not(.clear)[aria-pressed='true'] { color: #fff; font-weight: 500; }
+.ranker button[data-rank]:not(.clear)[aria-pressed='true']::before { background: var(--ink); border-color: var(--ink); }
+@media (min-width: 700px) { .ranker button[data-rank]:not(.clear) { font-size: 16px; } }
+.ranker.large { --box: 50px; --gap: 10px; }
+.ranker.large button[data-rank]:not(.clear) { font-size: 18px; }
+@media (max-width: 899px) { .rank-box .ranker.large { --box: 44px; --gap: 7px; } }
+
+/* ------------------------------------------------------------ end rank buttons */
 
 /* ------------------------------------------------------------ item page */
 .item-page { display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr); }
@@ -239,13 +245,6 @@ h1.page-title {
     background: rgba(255, 255, 255, 0.97); border-top: 1px solid var(--line);
     box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.05);
   }
-  .rank-box .ranker.large { grid-template-columns: 6.4em repeat(5, minmax(0, 1fr)); align-items: center; max-width: 560px; margin: 0 auto; }
-  .rank-box .ranker.large .label { grid-column: auto; margin: 0 8px 0 0; font-size: 12px; line-height: 1.3; letter-spacing: 0.08em; color: var(--ink); }
-  .rank-box .ranker.large .label .hint { display: block; text-transform: none; letter-spacing: 0; font-size: 12px; margin-top: 2px; color: var(--muted); }
-  .rank-box .ranker.large .label .hint::before { content: none; }
-  .rank-box .ranker.large { --disc: 40px; --num: 25px; }
-  .rank-box .ranker.large button[data-rank]:not(.clear) { height: 52px; }
-  .rank-box .ranker.large .clear { grid-column: 1; grid-row: 2; height: var(--tap); margin: -6px 0 -8px; padding: 0; font-size: 13px; text-align: left; }
   main:has(.rank-box) { padding-bottom: 120px; }
   body:has(.rank-box) .toast { bottom: calc(90px + env(safe-area-inset-bottom)); }
   .item-page:has(.edit-box) .rank-box { display: none; } /* keep it out of the way of the keyboard */
