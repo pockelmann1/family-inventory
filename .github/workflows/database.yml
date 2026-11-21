@@ -1,0 +1,33 @@
+name: Database setup
+
+# Applies supabase/schema.sql to the Supabase project. The script is safe to
+# run more than once and contains no family data.
+on:
+  push:
+    paths:
+      - supabase/schema.sql
+      - scripts/pg-env.sh
+      - .github/workflows/database.yml
+  workflow_dispatch:
+
+concurrency: database
+
+permissions:
+  contents: read
+
+env:
+  SUPABASE_PROJECT_REF: joclsntnnmtzzeippxhp
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find database connection
+        run: scripts/pg-env.sh
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      - name: Apply schema
+        run: psql -v ON_ERROR_STOP=1 -q -f supabase/schema.sql 2>&1 | grep -v NOTICE || test ${PIPESTATUS[0]} -eq 0
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}

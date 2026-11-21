@@ -1,0 +1,47 @@
+name: Photos and keep-alive
+
+# Moves newly staged photos into private storage, refreshes the week-long
+# signed photo links, and pings Supabase so the free project never pauses.
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  push:
+    paths:
+      - scripts/photos.mjs
+      - scripts/photos-run.txt
+      - .github/workflows/photos.yml
+  workflow_dispatch:
+
+concurrency: photos
+
+permissions:
+  contents: read
+
+env:
+  SUPABASE_PROJECT_REF: joclsntnnmtzzeippxhp
+  SUPABASE_URL: https://joclsntnnmtzzeippxhp.supabase.co
+  SUPABASE_PUBLISHABLE_KEY: sb_publishable_l1slwkNY7ofygcwQWt4QrA_-FazT4jv
+
+jobs:
+  photos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Keep Supabase awake
+        run: |
+          curl -fsS -o /dev/null -X POST "$SUPABASE_URL/rest/v1/rpc/fi_ping" \
+            -H "apikey: $SUPABASE_PUBLISHABLE_KEY" -H "Content-Type: application/json" -d '{}'
+      - name: Find database connection
+        run: scripts/pg-env.sh
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      - name: Move photos and refresh links
+        run: node scripts/photos.mjs
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
