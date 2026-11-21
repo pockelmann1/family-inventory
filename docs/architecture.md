@@ -59,6 +59,7 @@ flowchart LR
 | `#/` | Browse: the collection, filters, rank buttons | everyone |
 | `#/item/ITEM-0001` | One item: photos, ranking, details, own family's ranks, edit history | everyone |
 | `#/family` | My family: your top 10 (drag to reorder, add from a search of what you ranked), the family top 10 (worked out from everyone's lists: 10 points for 1st place down to 1 for 10th, added up) and each person's top 10 side by side, then each family member's ranks | family members |
+| `#/assign` | Assign: close ranking, give each item to a family, push to families, push updates | admin |
 | `#/results` | Results: each family's family top 10 side by side and every person's list, best rank and most-wanted family per item, CSV download | admin |
 | `#/fill` | Add info: one item at a time, with photo-based suggestions | editors and admin |
 | `#/admin` | Admin: links, editors, who has started | admin |
@@ -71,6 +72,20 @@ Browse and the item page show no "most wanted" line, interest filter or
 most-wanted sort. Results (every family) is for the admin, who does not rank
 and sees everything. In `src/main.js` this is `seesOthers()` and the admin
 check on the Results tab.
+
+## Ranking, assigning and pushing
+
+1. **Ranking open.** Family members rank and keep their top 10s.
+2. **Ranking closed.** The admin closes ranking on Assign. Ranks and top 10s are
+   kept but can't change (the database refuses), and families see a notice.
+3. **Draft.** Each item starts with the family that ranked it best (a dashed
+   button). The admin confirms it or taps another family, one item at a time.
+   Ties and items nobody ranked wait for the admin. A count per family runs at
+   the top. Families see nothing yet.
+4. **Pushed.** "Push to families" stays locked until every visible item has a
+   family. After the push every item shows where it went (Browse, item page,
+   My family), and ranking can't reopen. Later changes are marked on their rows
+   and stay a draft until "Push update" (or "Discard").
 
 ## Security in one paragraph
 

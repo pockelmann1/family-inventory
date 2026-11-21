@@ -118,6 +118,32 @@ create table if not exists app.top_picks (
   unique (person_id, item_id)
 );
 
+-- Where the family is in the process: ranking open -> ranking closed (admin drafts
+-- assignments) -> pushed to families. One row.
+create table if not exists app.stage (
+  id            int primary key default 1 check (id = 1),
+  ranking_open  boolean not null default true,
+  closed_at     timestamptz,
+  pushed_at     timestamptz,
+  push_count    int not null default 0
+);
+insert into app.stage (id) values (1) on conflict (id) do nothing;
+
+-- The admin's working copy: which family each item goes to. Only the admin sees it.
+create table if not exists app.assignments (
+  item_id     text primary key references app.items(id) on delete cascade,
+  family_id   int  not null references app.families(id),
+  decided_by  int  references app.people(id),
+  decided_at  timestamptz not null default now()
+);
+
+-- What families see: a copy of app.assignments taken when the admin pushes.
+create table if not exists app.assignments_pushed (
+  item_id    text primary key references app.items(id) on delete cascade,
+  family_id  int  not null references app.families(id),
+  pushed_at  timestamptz not null default now()
+);
+
 -- Editors (for example Susan) get the "Add info" screen and see drafts.
 alter table app.people add column if not exists is_editor boolean not null default false;
 
@@ -140,7 +166,8 @@ do $$
 declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
-                           'rankings','item_edits','item_drafts','top_picks','import_tokens','photo_staging']
+                           'rankings','item_edits','item_drafts','top_picks','stage','assignments',
+                           'assignments_pushed','import_tokens','photo_staging']
   loop
     execute format('alter table app.%I enable row level security', t);
     execute format('alter table app.%I force row level security', t);
@@ -155,7 +182,8 @@ do $$
 declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
-                           'rankings','item_edits','item_drafts','top_picks','import_tokens','photo_staging']
+                           'rankings','item_edits','item_drafts','top_picks','stage','assignments',
+                           'assignments_pushed','import_tokens','photo_staging']
   loop
     if not exists (select 1 from pg_policies
                    where schemaname = 'app' and tablename = t and policyname = 'owner_all') then
@@ -301,6 +329,10 @@ begin
                                                   where k = me.family_id::text), '{}'::jsonb) end,
                'overall_best', case when me.is_admin then res.overall_best end,
                'top_families', case when me.is_admin then res.top_families else '[]'::jsonb end,
+               -- Where the item went, once the admin has pushed assignments (everyone sees this).
+               'went_to', (select ap.family_id from app.assignments_pushed ap where ap.item_id = i.id),
+               -- The admin's working copy, which may differ from what families see.
+               'assigned', case when me.is_admin then (select a.family_id from app.assignments a where a.item_id = i.id) end,
                'draft', (select jsonb_build_object('name', d.name, 'type', d.type,
                                                    'subtype', d.subtype, 'description', d.description)
                          from app.item_drafts d
@@ -309,6 +341,9 @@ begin
       from app.items i
       join app.item_results res on res.item_id = i.id
       where me.is_admin or not i.hidden), '[]'::jsonb),
+    'stage', (select jsonb_build_object('ranking_open', st.ranking_open, 'closed_at', st.closed_at,
+                                        'pushed_at', st.pushed_at, 'push_count', st.push_count)
+              from app.stage st where st.id = 1),
     -- Top 10 lists: { person_id: [item ids in order] } for the caller's family (admin: everyone).
     'top10', coalesce((
       select jsonb_object_agg(t.person_id::text, t.items)
@@ -321,6 +356,12 @@ begin
   ) into result;
   return result;
 end $$;
+
+-- True while family members may still change ranks and top 10s.
+create or replace function app.ranking_open()
+returns boolean language sql stable security definer set search_path = '' as $$
+  select coalesce((select ranking_open from app.stage where id = 1), true)
+$$;
 
 -- Replace a person's top 10 with the given item ids, in order.
 create or replace function app.put_top10(p_person int, p_items text[])
@@ -342,6 +383,9 @@ begin
   me := app.person_for(p_key);
   if me.family_id is null then
     raise exception 'only family members have a top 10' using errcode = '42501';
+  end if;
+  if not app.ranking_open() then
+    raise exception 'Ranking is closed, so ranks and top 10s can no longer change.' using errcode = '55000';
   end if;
   if jsonb_typeof(p_items) is distinct from 'array' then
     raise exception 'items must be a list' using errcode = '22023';
@@ -374,6 +418,9 @@ begin
   if me.family_id is null then
     raise exception 'only family members can rank' using errcode = '42501';
   end if;
+  if not app.ranking_open() then
+    raise exception 'Ranking is closed, so ranks and top 10s can no longer change.' using errcode = '55000';
+  end if;
   if not exists (select 1 from app.items where id = p_item and not hidden) then
     raise exception 'unknown item' using errcode = 'P0002';
   end if;
@@ -404,6 +451,93 @@ begin
     into res
   from app.item_results res2 where res2.item_id = p_item;
   return res;
+end $$;
+
+-- ------------------------------------------------------------- assignments
+
+-- Close ranking (p_open = false) or reopen it. Ranking cannot reopen once
+-- assignments have been pushed to families.
+create or replace function public.fi_admin_set_ranking(p_key text, p_open boolean)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare
+  st app.stage;
+begin
+  perform app.admin_for(p_key);
+  select * into st from app.stage where id = 1 for update;
+  if p_open and st.pushed_at is not null then
+    raise exception 'Assignments have gone out to families, so ranking cannot reopen.' using errcode = '55000';
+  end if;
+  update app.stage set ranking_open = p_open,
+                       closed_at = case when p_open then null else coalesce(closed_at, now()) end
+   where id = 1;
+  return (select jsonb_build_object('ranking_open', ranking_open, 'closed_at', closed_at,
+                                    'pushed_at', pushed_at, 'push_count', push_count)
+          from app.stage where id = 1);
+end $$;
+
+-- Give an item to a family (or take the decision back with p_family = null).
+-- Only while ranking is closed. Families see nothing until the admin pushes.
+create or replace function public.fi_admin_assign(p_key text, p_item text, p_family int)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare
+  me app.people;
+begin
+  me := app.admin_for(p_key);
+  if app.ranking_open() then
+    raise exception 'Close ranking before assigning items.' using errcode = '55000';
+  end if;
+  if not exists (select 1 from app.items where id = p_item and not hidden) then
+    raise exception 'unknown item' using errcode = 'P0002';
+  end if;
+  if p_family is null then
+    delete from app.assignments where item_id = p_item;
+  else
+    if not exists (select 1 from app.families where id = p_family) then
+      raise exception 'unknown family' using errcode = 'P0002';
+    end if;
+    insert into app.assignments (item_id, family_id, decided_by)
+    values (p_item, p_family, me.id)
+    on conflict (item_id) do update set family_id = excluded.family_id, decided_by = excluded.decided_by,
+                                        decided_at = now();
+  end if;
+  return jsonb_build_object('item', p_item, 'family', p_family);
+end $$;
+
+-- Send the working copy to families. Every item that families can see must
+-- have a family first.
+create or replace function public.fi_admin_push(p_key text)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare
+  missing int;
+begin
+  perform app.admin_for(p_key);
+  if app.ranking_open() then
+    raise exception 'Close ranking before pushing assignments.' using errcode = '55000';
+  end if;
+  select count(*) into missing from app.items i
+   where not i.hidden and not exists (select 1 from app.assignments a where a.item_id = i.id);
+  if missing > 0 then
+    raise exception '% items still need a family.', missing using errcode = '55000';
+  end if;
+  delete from app.assignments_pushed where true;
+  insert into app.assignments_pushed (item_id, family_id)
+  select a.item_id, a.family_id from app.assignments a join app.items i on i.id = a.item_id where not i.hidden;
+  update app.stage set pushed_at = now(), push_count = push_count + 1 where id = 1;
+  return (select jsonb_build_object('ranking_open', ranking_open, 'closed_at', closed_at,
+                                    'pushed_at', pushed_at, 'push_count', push_count)
+          from app.stage where id = 1);
+end $$;
+
+-- Throw away changes made since the last push.
+create or replace function public.fi_admin_discard_assignments(p_key text)
+returns void language plpgsql volatile security definer set search_path = '' as $$
+begin
+  perform app.admin_for(p_key);
+  if (select pushed_at from app.stage where id = 1) is null then
+    raise exception 'Nothing has been pushed yet.' using errcode = '55000';
+  end if;
+  delete from app.assignments where true;
+  insert into app.assignments (item_id, family_id) select item_id, family_id from app.assignments_pushed;
 end $$;
 
 -- Edit a descriptive field; every change is recorded in app.item_edits.
