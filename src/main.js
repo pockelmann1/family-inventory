@@ -1,3 +1,10 @@
+// Fonts are served with the site (no Google Fonts request before the page shows).
+import '@fontsource/cormorant-garamond/latin-400.css';
+import '@fontsource/cormorant-garamond/latin-400-italic.css';
+import '@fontsource/cormorant-garamond/latin-500.css';
+import '@fontsource/jost/latin-300.css';
+import '@fontsource/jost/latin-400.css';
+import '@fontsource/jost/latin-500.css';
 import './style.css';
 import { makeApi } from './api.js';
 
@@ -47,7 +54,8 @@ function personalLink(key) {
 
 const KEY_RE = /[#?&/]k=([A-Za-z0-9_-]{20,})/;
 const NAME_STORE = 'fi_name';
-const VIEW_STORES = ['fi_browse', 'fi_results', 'fi_fam_all', 'fi_scroll'];
+const VIEW_STORES = ['fi_browse', 'fi_results', 'fi_family', 'fi_fill', 'fi_from',
+  'fi_scroll_browse', 'fi_scroll_family', 'fi_scroll_results', 'fi_scroll_fill'];
 
 // The key in the address, if any. Tolerates links that arrive with # or =
 // written as %23 or %3D, and trailing punctuation from the message.
@@ -140,6 +148,41 @@ const photoOf = (item) => item.photos[0] || null;
 const rooms = () => [...new Set(state.items.map((i) => i.room).filter(Boolean))].sort();
 const types = () => [...new Set(state.items.map((i) => i.type).filter(Boolean))].sort();
 
+// Pick list for an item's type. Anyone can add a new type; once saved on an
+// item it shows up in the list for everyone.
+const BASE_TYPES = ['Art', 'Books', 'Ceramics', 'Decor', 'Furniture', 'Glass', 'Kitchen', 'Lighting',
+  'Object', 'Silver and metal', 'Textiles and rugs', 'Other'];
+const typeChoices = () => [...new Set([...BASE_TYPES, ...types()])].sort((a, b) => (a === 'Other') - (b === 'Other') || a.localeCompare(b));
+function typeSelectHtml(current, attrs = '') {
+  const list = typeChoices();
+  const cur = current || '';
+  return `
+    <span class="type-pick">
+      <select class="select edit-val" ${attrs}>
+        <option value="" ${cur ? '' : 'selected'}>Choose a type…</option>
+        ${list.map((t) => `<option value="${esc(t)}" ${t === cur ? 'selected' : ''}>${esc(t)}</option>`).join('')}
+        ${cur && !list.includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ''}
+        <option value="__new">Add a new type…</option>
+      </select>
+      <input class="input new-type" placeholder="New type, for example Clocks" hidden aria-label="New type" />
+    </span>`;
+}
+// The value of a type picker: the chosen type, or the new one typed in.
+function typeValue(box) {
+  const sel = box.querySelector('.type-pick select');
+  return sel.value === '__new' ? box.querySelector('.new-type').value.trim() : sel.value;
+}
+document.addEventListener('change', (e) => {
+  const sel = e.target.closest('.type-pick select');
+  if (!sel) return;
+  const input = sel.parentElement.querySelector('.new-type');
+  input.hidden = sel.value !== '__new';
+  if (!input.hidden) input.focus();
+});
+
+const isPlaceholderName = (i) => /, photo \d+[a-z]?$/i.test(i.name) || i.name === i.room;
+const needs = (i) => ({ name: isPlaceholderName(i), type: !i.type, description: !i.description });
+
 // "Most wanted by Susan's family (best rank 2)", or several families when tied.
 function bestLine(item) {
   if (item.overall_best == null) return '';
@@ -157,6 +200,7 @@ function shell(active, content) {
     ['family', '#/family', 'My family'],
     ['results', '#/results', 'Results'],
   ];
+  if (state.me.is_editor) tabs.push(['fill', '#/fill', 'Add info']);
   if (state.me.is_admin) tabs.push(['admin', '#/admin', 'Admin']);
   app.innerHTML = `
     <header class="site-header">
@@ -193,7 +237,9 @@ function rankerHtml(item, large = false) {
 function thumbImg(item, cls = '') {
   const p = photoOf(item);
   if (!p?.thumb) return `<div class="placeholder ${cls}">Photo coming</div>`;
-  return `<img class="${cls}" src="${esc(p.thumb)}" alt="${esc(item.name)}" loading="lazy" decoding="async" />`;
+  // Sharp screens get the larger photo; others keep the small, fast one.
+  const srcset = p.full ? ` srcset="${esc(p.thumb)} 360w, ${esc(p.full)} 768w" sizes="(max-width: 700px) 50vw, 340px"` : '';
+  return `<img class="${cls}" src="${esc(p.thumb)}"${srcset} alt="${esc(item.name)}" loading="lazy" decoding="async" />`;
 }
 
 // Rank clicks anywhere on the page.
@@ -223,6 +269,8 @@ document.addEventListener('click', async (e) => {
     });
     document.querySelectorAll(`[data-best="${CSS.escape(id)}"]`).forEach((el) => (el.innerHTML = bestLine(fresh)));
     if (currentRoute().name === 'item') renderWhoRanked(fresh);
+    const prog = document.getElementById('progress');
+    if (prog) prog.outerHTML = progressBar();
     toast(next == null ? 'Rank cleared' : `Ranked ${next}`);
   } catch (err) {
     if (!state.me) return; // signed out
@@ -238,8 +286,9 @@ let savesInFlight = 0;
 
 const FILTERS = 'fi_browse';
 function loadFilters() {
-  try { return { q: '', room: '', type: '', mine: 'all', sort: 'catalog', ...JSON.parse(getStored(FILTERS, 'sessionStorage') || '{}') }; }
-  catch { return { q: '', room: '', type: '', mine: 'all', sort: 'catalog' }; }
+  const blank = { q: '', room: '', type: '', mine: 'all', interest: 'all', sort: 'catalog' };
+  try { return { ...blank, ...JSON.parse(getStored(FILTERS, 'sessionStorage') || '{}') }; }
+  catch { return blank; }
 }
 
 function filteredItems(f) {
@@ -249,12 +298,55 @@ function filteredItems(f) {
     if (f.type && i.type !== f.type) return false;
     if (f.mine === 'unranked' && myRank(i) != null) return false;
     if (f.mine === 'ranked' && myRank(i) == null) return false;
+    const fams = Object.keys(i.family_best).length;
+    if (f.interest === 'none' && fams > 0) return false;
+    if (f.interest === 'some' && fams === 0) return false;
+    if (f.interest === 'multi' && fams < 2) return false;
     if (q && !`${i.name} ${i.id} ${i.room} ${i.type} ${i.subtype} ${i.description}`.toLowerCase().includes(q)) return false;
     return true;
   });
   if (f.sort === 'mine') list = [...list].sort((a, b) => (myRank(a) ?? 9) - (myRank(b) ?? 9));
-  if (f.sort === 'wanted') list = [...list].sort((a, b) => (a.overall_best ?? 9) - (b.overall_best ?? 9) || b.top_families.length - a.top_families.length);
+  if (f.sort === 'wanted') list = [...list].sort((a, b) => (a.overall_best ?? 9) - (b.overall_best ?? 9)); // stable: ties stay in catalog order
+  if (f.sort === 'name') list = [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (f.sort === 'room') list = [...list].sort((a, b) => a.room.localeCompare(b.room)); // stable within a room
   return list;
+}
+
+// Shown on a person's first visit, until they close it.
+function welcomeCard() {
+  if (!canRank() || getStored('fi_welcomed') === '1') return '';
+  return `
+    <section class="welcome" id="welcome" aria-labelledby="welcome-h">
+      <h2 id="welcome-h">Welcome, ${esc(state.me.name)}</h2>
+      <ol>
+        <li>Look through everything from the house. Tap a photo to see it larger.</li>
+        <li>Under anything you would like, tap a number: <b>1</b> means you want it most, <b>5</b> means a little.</li>
+        <li>Rank as many or as few as you like, and change them any time. Everyone in the family can see the ranks.</li>
+        <li>Each family's best (lowest) number counts for that family. Results shows who wants what.</li>
+      </ol>
+      <button type="button" class="btn" id="welcome-ok">Got it</button>
+    </section>`;
+}
+document.addEventListener('click', (e) => {
+  if (e.target.id !== 'welcome-ok') return;
+  setStored('fi_welcomed', '1');
+  document.getElementById('welcome')?.remove();
+});
+
+const firstUnranked = (after = null) => {
+  const list = state.items;
+  const start = after ? list.findIndex((i) => i.id === after) + 1 : 0;
+  return [...list.slice(start), ...list.slice(0, start)].find((i) => myRank(i) == null && i.id !== after) || null;
+};
+
+function progressBar() {
+  const done = state.items.filter((i) => myRank(i) != null).length;
+  const next = firstUnranked();
+  return `
+    <div class="progress" id="progress">
+      <span>You have ranked <b>${done}</b> of ${state.items.length} items.</span>
+      ${next ? `<a class="btn ghost small" href="#/item/${esc(next.id)}">Next unranked item &rarr;</a>` : '<span>You have ranked everything.</span>'}
+    </div>`;
 }
 
 function renderBrowse() {
@@ -263,13 +355,16 @@ function renderBrowse() {
   shell('browse', `
     <h1 class="page-title">The Collection</h1>
     <p class="page-sub">${canRank() ? 'Tap 1 to 5 under anything you would like. 1 means you want it most, 5 means a little.' : 'Browse everything in the house and see who is interested.'}</p>
+    ${welcomeCard()}
+    ${canRank() ? progressBar() : ''}
     <div class="toolbar">
       <input class="input search" type="search" placeholder="Search by name, room or ID" value="${esc(f.q)}" data-f="q" aria-label="Search" />
       <div class="row">
         <select class="select" data-f="room" aria-label="Room">${opt('', 'All rooms', f.room)}${rooms().map((r) => opt(r, r, f.room)).join('')}</select>
         ${types().length ? `<select class="select" data-f="type" aria-label="Type">${opt('', 'All types', f.type)}${types().map((t) => opt(t, t, f.type)).join('')}</select>` : ''}
         ${canRank() ? `<select class="select" data-f="mine" aria-label="My ranks">${opt('all', 'Everything', f.mine)}${opt('unranked', 'Not yet ranked by me', f.mine)}${opt('ranked', 'Ranked by me', f.mine)}</select>` : ''}
-        <select class="select" data-f="sort" aria-label="Sort">${opt('catalog', 'Catalog order', f.sort)}${opt('wanted', 'Most wanted', f.sort)}${canRank() ? opt('mine', 'My ranks first', f.sort) : ''}</select>
+        <select class="select" data-f="interest" aria-label="Interest">${opt('all', 'Any interest', f.interest)}${opt('none', 'Nobody has ranked it', f.interest)}${opt('some', 'Someone wants it', f.interest)}${opt('multi', 'Wanted by 2+ families', f.interest)}</select>
+        <select class="select" data-f="sort" aria-label="Sort">${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}${opt('wanted', 'Sort: most wanted', f.sort)}${canRank() ? opt('mine', 'Sort: my ranks first', f.sort) : ''}</select>
       </div>
     </div>
     <p class="count" id="count"></p>
@@ -304,8 +399,6 @@ function renderBrowse() {
       t = setTimeout(draw, el.dataset.f === 'q' ? 150 : 0);
     }));
 
-  const y = Number(getStored('fi_scroll', 'sessionStorage') || 0);
-  if (y) requestAnimationFrame(() => window.scrollTo(0, y));
 }
 
 document.addEventListener('click', (e) => {
@@ -315,7 +408,8 @@ document.addEventListener('click', (e) => {
 });
 
 window.addEventListener('scroll', () => {
-  if (currentRoute().name === 'browse') setStored('fi_scroll', String(window.scrollY), 'sessionStorage');
+  const name = currentRoute().name;
+  if (name !== 'item') setStored(`fi_scroll_${name}`, String(window.scrollY), 'sessionStorage');
 }, { passive: true });
 
 // ------------------------------------------------------------------ item
@@ -338,10 +432,23 @@ function renderWhoRanked(item) {
     return `
       <div class="fam">
         <div class="fam-head"><strong>${esc(f.name)}'s family</strong>
-          <span>${best != null ? `Best ${best}${top ? ' <span class="top-tag">· top interest</span>' : ''}` : '<span style="color:var(--faint)">No ranks yet</span>'}</span></div>
+          <span>${best != null ? `Best ${best}${top ? ' <span class="top-tag">· most wanted</span>' : ''}` : '<span style="color:var(--faint)">No ranks yet</span>'}</span></div>
         <ul>${ranked.length ? ranked.map((m) => `<li>${esc(m.name)} <b>${item.ranks[String(m.id)]}</b></li>`).join('') : ''}</ul>
       </div>`;
   }).join('');
+}
+
+// The item page's back link returns to the list the person came from.
+const BACK_LABELS = { '#/': 'The collection', '#/family': 'My family', '#/results': 'Results', '#/fill': 'Add info', '#/admin': 'Admin' };
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[href^="#/item/"]');
+  if (!a || currentRoute().name === 'item') return;
+  const here = location.hash && BACK_LABELS[location.hash] ? location.hash : '#/';
+  setStored('fi_from', here, 'sessionStorage');
+});
+function backLink() {
+  const from = getStored('fi_from', 'sessionStorage') || '#/';
+  return `<a class="back" href="${from}">&larr; ${BACK_LABELS[from] || 'The collection'}</a>`;
 }
 
 function renderItem(id) {
@@ -357,13 +464,14 @@ function renderItem(id) {
   let current = 0;
 
   shell('browse', `
-    <a class="back" href="#/">&larr; The collection</a>
+    ${backLink()}
     <div class="item-page">
       <div>
         <div class="stage" id="stage"></div>
         ${item.photos.length > 1 ? `<div class="thumbs" id="thumbs">${item.photos.map((p, n) => `<button type="button" data-n="${n}" aria-label="Photo ${n + 1}">${p.thumb ? `<img src="${esc(p.thumb)}" alt="" />` : ''}</button>`).join('')}</div>` : ''}
         <div class="pager">
           ${prev ? `<a href="#/item/${esc(prev.id)}">&larr; Previous</a>` : '<span></span>'}
+          ${canRank() && firstUnranked(item.id) ? `<a href="#/item/${esc(firstUnranked(item.id).id)}">Next unranked</a>` : ''}
           ${next ? `<a href="#/item/${esc(next.id)}">Next &rarr;</a>` : '<span></span>'}
         </div>
       </div>
@@ -440,7 +548,9 @@ function renderItem(id) {
       row.innerHTML = `
         <dt id="lbl-${f}">${label}</dt>
         <div class="edit-box" style="grid-column: span 2" data-start="${esc(item[f])}">
-          ${multi ? `<textarea class="edit-val" aria-labelledby="lbl-${f}">${esc(item[f])}</textarea>` : `<input class="edit-val" aria-labelledby="lbl-${f}" value="${esc(item[f])}" />`}
+          ${f === 'type' ? typeSelectHtml(item.type, `aria-labelledby="lbl-${f}"`)
+            : multi ? `<textarea class="edit-val" aria-labelledby="lbl-${f}">${esc(item[f])}</textarea>`
+            : `<input class="edit-val" aria-labelledby="lbl-${f}" value="${esc(item[f])}" />`}
           <div class="edit-actions">
             <button type="button" class="btn small" data-save="${f}">Save</button>
             <button type="button" class="btn ghost small" data-cancel>Cancel</button>
@@ -459,7 +569,7 @@ function renderItem(id) {
     if (save) {
       const f = save.dataset.save;
       const boxEl = save.closest('.edit-box');
-      const val = boxEl.querySelector('.edit-val').value;
+      const val = f === 'type' ? typeValue(boxEl) : boxEl.querySelector('.edit-val').value;
       save.disabled = true;
       try {
         const res = await state.api.editItem(item.id, f, val, boxEl.dataset.start);
@@ -556,72 +666,126 @@ function miniItem(i) {
     <span><span class="t">${esc(i.name)}</span><br><span class="s">${esc(i.room)}&nbsp;· <span class="nw">${esc(i.id)}</span></span></span></a>`;
 }
 
+// Search, room and type filters shared by the My family and Results tables.
+const matchesQuery = (i, q) => !q || `${i.name} ${i.id} ${i.room} ${i.type} ${i.subtype} ${i.description}`.toLowerCase().includes(q);
+const SORTS = {
+  catalog: () => 0,
+  room: (a, b) => a.room.localeCompare(b.room),
+  name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }),
+};
+
+function tableToolbar(f, extra) {
+  const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+  return `
+    <div class="toolbar">
+      <input class="input search" type="search" placeholder="Search by name, room or ID" value="${esc(f.q)}" data-f="q" aria-label="Search" />
+      <div class="row">
+        ${extra(opt)}
+        <select class="select" data-f="room" aria-label="Room">${opt('', 'All rooms', f.room)}${rooms().map((r) => opt(r, r, f.room)).join('')}</select>
+        ${types().length ? `<select class="select" data-f="type" aria-label="Type">${opt('', 'All types', f.type)}${types().map((t) => opt(t, t, f.type)).join('')}</select>` : ''}
+      </div>
+    </div>`;
+}
+
+function wireToolbar(f, storeKey, draw) {
+  let t;
+  app.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('input', () => {
+    f[el.dataset.f] = el.value;
+    setStored(storeKey, JSON.stringify(f), 'sessionStorage');
+    clearTimeout(t);
+    t = setTimeout(draw, el.dataset.f === 'q' ? 150 : 0);
+  }));
+}
+
+function loadView(key, blank) {
+  try { return { ...blank, ...JSON.parse(getStored(key, 'sessionStorage') || '{}') }; } catch { return { ...blank }; }
+}
+
 function renderFamily() {
   const fam = state.families.find((f) => f.id === state.me.family_id);
   if (!fam) {
     shell('family', `<h1 class="page-title">My family</h1><p class="page-sub">You are not part of a sibling family, so there is nothing to show here. See Results for everyone.</p>`);
     return;
   }
-  let showAll = getStored('fi_fam_all', 'sessionStorage') === '1';
+  const f = loadView('fi_family', { q: '', room: '', type: '', who: 'any', sort: 'best' });
   shell('family', `
     <h1 class="page-title">${esc(fam.name)}'s family</h1>
     <p class="page-sub">What everyone in your family has ranked. The family best is the lowest number any of you gave.</p>
-    <div class="toolbar"><div class="row">
-      <button type="button" class="chip" id="all" aria-pressed="${showAll}">Show unranked items too</button>
-    </div></div>
+    ${tableToolbar(f, (opt) => `
+      <select class="select" data-f="who" aria-label="Show">${opt('any', 'Ranked by anyone in the family', f.who)}${opt('me', 'Ranked by me', f.who)}${fam.members.filter((m) => m.id !== state.me.id).map((m) => opt(String(m.id), `Ranked by ${m.name}`, f.who)).join('')}${opt('notme', 'Family ranked, I have not', f.who)}${opt('all', 'All items', f.who)}</select>
+      <select class="select" data-f="sort" aria-label="Sort">${opt('best', 'Sort: family best', f.sort)}${opt('mine', 'Sort: my rank', f.sort)}${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}</select>`)}
     <p class="count" id="count"></p>
     <div class="table-wrap"><table class="data" id="tbl"></table></div>`);
 
+  const famRanked = (i) => fam.members.some((m) => i.ranks[String(m.id)] != null);
   const draw = () => {
-    const rows = state.items.filter((i) => showAll || fam.members.some((m) => i.ranks[String(m.id)] != null));
+    if (!document.getElementById('tbl')) return;
+    const q = f.q.trim().toLowerCase();
+    let rows = state.items.filter((i) => {
+      if (f.room && i.room !== f.room) return false;
+      if (f.type && i.type !== f.type) return false;
+      if (!matchesQuery(i, q)) return false;
+      if (f.who === 'any') return famRanked(i);
+      if (f.who === 'me') return myRank(i) != null;
+      if (f.who === 'notme') return famRanked(i) && myRank(i) == null;
+      if (f.who === 'all') return true;
+      return i.ranks[f.who] != null;
+    });
+    const best = (i) => i.family_best[String(fam.id)] ?? 9;
+    if (f.sort === 'best') rows = [...rows].sort((a, b) => best(a) - best(b));
+    else if (f.sort === 'mine') rows = [...rows].sort((a, b) => (myRank(a) ?? 9) - (myRank(b) ?? 9));
+    else rows = [...rows].sort(SORTS[f.sort] || SORTS.catalog);
     document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
     document.getElementById('tbl').innerHTML = `
       <thead><tr><th>Item</th><th class="num key">Family best</th>${fam.members.map((m) => `<th class="num ${m.id === state.me.id ? 'me-col' : ''}">${m.id === state.me.id ? 'You' : esc(m.name)}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td><td class="num key">${rankCell(i.family_best[String(fam.id)])}</td>${fam.members.map((m) => `<td class="num ${m.id === state.me.id ? 'me-col' : ''}">${rankCell(i.ranks[String(m.id)])}</td>`).join('')}</tr>`).join('')
-        || `<tr><td colspan="${fam.members.length + 2}" class="empty-state">Nobody in your family has ranked anything yet.</td></tr>`}</tbody>`;
+        || `<tr><td colspan="${fam.members.length + 2}" class="empty-state">Nothing matches. Try another filter.</td></tr>`}</tbody>`;
   };
   draw();
-  document.getElementById('all').addEventListener('click', (e) => {
-    showAll = !showAll;
-    setStored('fi_fam_all', showAll ? '1' : '0', 'sessionStorage');
-    e.target.setAttribute('aria-pressed', String(showAll));
-    draw();
-  });
+  wireToolbar(f, 'fi_family', draw);
 }
 
 // ------------------------------------------------------------------ results
 
 function renderResults() {
-  const f = { room: '', view: 'ranked', ...JSON.parse(getStored('fi_results', 'sessionStorage') || '{}') };
-  const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+  const f = loadView('fi_results', { q: '', room: '', type: '', view: 'ranked', fam: '', sort: 'best' });
   shell('results', `
     <h1 class="page-title">Results</h1>
     <p class="page-sub">For each item: the best (lowest) rank anyone gave, which family wants it most, and each family's best rank. Ties are listed together.</p>
-    <div class="toolbar"><div class="row">
-      <select class="select" data-f="view" aria-label="Show">${opt('ranked', 'Items anyone ranked', f.view)}${opt('multi', 'Wanted by 2 or more families', f.view)}${opt('all', 'All items', f.view)}</select>
-      <select class="select" data-f="room" aria-label="Room">${opt('', 'All rooms', f.room)}${rooms().map((r) => opt(r, r, f.room)).join('')}</select>
-      ${state.me.is_admin ? '<button type="button" class="chip" id="csv">Download CSV</button>' : ''}
-    </div></div>
+    ${tableToolbar(f, (opt) => `
+      <select class="select" data-f="view" aria-label="Show">${opt('ranked', 'Items anyone ranked', f.view)}${opt('multi', 'Wanted by 2 or more families', f.view)}${opt('tied', 'Tied between families', f.view)}${opt('none', 'Nobody has ranked yet', f.view)}${opt('all', 'All items', f.view)}</select>
+      <select class="select" data-f="fam" aria-label="Family">${opt('', 'Any family', f.fam)}${state.families.map((fm) => opt(String(fm.id), `Most wanted by ${fm.name}'s family`, f.fam)).join('')}</select>
+      <select class="select" data-f="sort" aria-label="Sort">${opt('best', 'Sort: best rank', f.sort)}${opt('families', 'Sort: most families interested', f.sort)}${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}</select>`)}
+    ${state.me.is_admin ? '<p class="csv-row"><button type="button" class="chip" id="csv">Download everything as a spreadsheet (CSV)</button></p>' : ''}
     <p class="count" id="count"></p>
     <div class="table-wrap"><table class="data" id="tbl"></table></div>`);
 
   const draw = () => {
-    let rows = state.items.filter((i) => (!f.room || i.room === f.room));
-    if (f.view === 'ranked') rows = rows.filter((i) => i.overall_best != null);
-    if (f.view === 'multi') rows = rows.filter((i) => Object.keys(i.family_best).length >= 2);
-    rows = [...rows].sort((a, b) => (a.overall_best ?? 9) - (b.overall_best ?? 9) || a.id.localeCompare(b.id));
+    if (!document.getElementById('tbl')) return;
+    const q = f.q.trim().toLowerCase();
+    const nFam = (i) => Object.keys(i.family_best).length;
+    let rows = state.items.filter((i) => {
+      if (f.room && i.room !== f.room) return false;
+      if (f.type && i.type !== f.type) return false;
+      if (!matchesQuery(i, q)) return false;
+      if (f.fam && !i.top_families.includes(Number(f.fam))) return false;
+      if (f.view === 'ranked') return i.overall_best != null;
+      if (f.view === 'multi') return nFam(i) >= 2;
+      if (f.view === 'tied') return i.top_families.length >= 2;
+      if (f.view === 'none') return i.overall_best == null;
+      return true;
+    });
+    if (f.sort === 'best') rows = [...rows].sort((a, b) => (a.overall_best ?? 9) - (b.overall_best ?? 9));
+    else if (f.sort === 'families') rows = [...rows].sort((a, b) => nFam(b) - nFam(a) || (a.overall_best ?? 9) - (b.overall_best ?? 9));
+    else rows = [...rows].sort(SORTS[f.sort] || SORTS.catalog);
     document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
     document.getElementById('tbl').innerHTML = `
       <thead><tr><th>Item</th><th class="num key">Best</th><th class="key">Most wanted by</th>${state.families.map((fm) => `<th class="num">${esc(fm.name)}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td><td class="num key">${rankCell(i.overall_best)}</td><td class="key who">${esc(i.top_families.map(familyName).join(', '))}</td>${state.families.map((fm) => `<td class="num">${rankCell(i.family_best[String(fm.id)])}</td>`).join('')}</tr>`).join('')
-        || `<tr><td colspan="${state.families.length + 3}" class="empty-state">No ranks yet.</td></tr>`}</tbody>`;
+        || `<tr><td colspan="${state.families.length + 3}" class="empty-state">Nothing matches. Try another filter.</td></tr>`}</tbody>`;
   };
   draw();
-  app.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('input', () => {
-    f[el.dataset.f] = el.value;
-    setStored('fi_results', JSON.stringify(f), 'sessionStorage');
-    draw();
-  }));
+  wireToolbar(f, 'fi_results', draw);
   document.getElementById('csv')?.addEventListener('click', downloadCsv);
 }
 
@@ -649,16 +813,169 @@ function downloadCsv() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+// ------------------------------------------------------------------ add info
+//
+// One item at a time, with a big photo and every field ready to type in.
+// Items with a suggestion written from the photo come prefilled; nothing is
+// saved until the editor taps Save.
+
+const FILL = 'fi_fill';
+function loadFill() {
+  const blank = { show: 'needs', room: '', q: '', at: '' };
+  try { return { ...blank, ...JSON.parse(getStored(FILL, 'sessionStorage') || '{}') }; } catch { return blank; }
+}
+
+function fillQueue(f) {
+  const q = f.q.trim().toLowerCase();
+  return state.items.filter((i) => {
+    const n = needs(i);
+    if (f.room && i.room !== f.room) return false;
+    if (q && !`${i.name} ${i.id} ${i.room} ${i.type} ${i.description}`.toLowerCase().includes(q)) return false;
+    if (f.show === 'needs') return n.name || n.type || n.description;
+    if (f.show === 'name') return n.name;
+    if (f.show === 'type') return n.type;
+    if (f.show === 'description') return n.description;
+    if (f.show === 'draft') return !!i.draft;
+    return true;
+  });
+}
+
+function renderFill() {
+  if (!state.me.is_editor) { location.hash = '#/'; return; }
+  const f = loadFill();
+  const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+  const counts = state.items.reduce((c, i) => { const n = needs(i); c.name += n.name; c.type += n.type; c.description += n.description; c.draft += !!i.draft; return c; }, { name: 0, type: 0, description: 0, draft: 0 });
+  shell('fill', `
+    <h1 class="page-title">Add info</h1>
+    <p class="page-sub">${counts.name} items still need a name, ${counts.type} need a type and ${counts.description} need a description.
+      ${counts.draft ? `${counts.draft} have a suggestion written from the photo for you to check.` : ''}</p>
+    <div class="toolbar">
+      <input class="input search" type="search" placeholder="Search by name, room or ID" value="${esc(f.q)}" data-f="q" aria-label="Search" />
+      <div class="row">
+        <select class="select" data-f="show" aria-label="Show">
+          ${opt('needs', 'Anything missing', f.show)}${opt('draft', 'Has a suggestion', f.show)}${opt('name', 'Needs a name', f.show)}${opt('type', 'Needs a type', f.show)}${opt('description', 'Needs a description', f.show)}${opt('all', 'All items', f.show)}
+        </select>
+        <select class="select" data-f="room" aria-label="Room">${opt('', 'All rooms', f.room)}${rooms().map((r) => opt(r, r, f.room)).join('')}</select>
+      </div>
+    </div>
+    <div id="fill"></div>`);
+
+  const save = () => setStored(FILL, JSON.stringify(f), 'sessionStorage');
+  let queue = fillQueue(f);
+
+  const draw = () => {
+    const box = document.getElementById('fill');
+    if (!box) return;
+    if (!queue.length) {
+      box.innerHTML = `<div class="empty-state"><p>Nothing left here. ${f.show === 'all' ? '' : 'Try "All items" to look through everything.'}</p></div>`;
+      return;
+    }
+    let idx = queue.findIndex((i) => i.id === f.at);
+    if (idx < 0) { idx = 0; f.at = queue[0].id; save(); }
+    const item = queue[idx];
+    const d = item.draft || {};
+    const val = (k) => (k === 'name' ? (isPlaceholderName(item) ? (d.name || '') : item.name) : (item[k] || d[k] || ''));
+    const fromDraft = (k) => item.draft && d[k] && (k === 'name' ? isPlaceholderName(item) : !item[k]);
+    const p = photoOf(item);
+    const mark = (k) => (fromDraft(k) ? ' <span class="suggested">suggested</span>' : '');
+    box.innerHTML = `
+      <p class="count">${idx + 1} of ${queue.length}</p>
+      <div class="fill-item" data-id="${esc(item.id)}">
+        <div class="fill-photo">${p?.full ? `<img src="${esc(p.full)}" alt="${esc(item.name)}" />` : '<div class="placeholder">Photo coming</div>'}</div>
+        <form class="fill-form" autocomplete="off">
+          <div class="eyebrow">${esc(item.room)}${item.photo_no ? ` · Photo ${esc(item.photo_no)}` : ''} · <a href="#/item/${esc(item.id)}">${esc(item.id)}</a></div>
+          ${item.draft ? '<p class="draft-note">Suggested from the photo. Check it, fix anything that is wrong, then save.</p>' : ''}
+          ${isPlaceholderName(item) ? `<p class="now">Now called “${esc(item.name)}”</p>` : ''}
+          <label>Name${mark('name')}<input class="input" name="name" value="${esc(val('name'))}" placeholder="For example: Blue and white teapot" /></label>
+          <label class="fill-type">Type${mark('type')}${typeSelectHtml(val('type'))}</label>
+          <label>Subtype${mark('subtype')}<input class="input" name="subtype" value="${esc(val('subtype'))}" placeholder="For example: Painting, Print, Chair" /></label>
+          <label>Origin<input class="input" name="origin" value="${esc(item.origin)}" placeholder="Where it came from, who made it" /></label>
+          <label>Description${mark('description')}<textarea class="input" name="description" rows="4">${esc(val('description'))}</textarea></label>
+          <p class="conflict-note" hidden></p>
+          <div class="fill-actions">
+            <button type="submit" class="btn">Save and next</button>
+            <button type="button" class="btn ghost" data-go="1">Skip</button>
+            ${idx > 0 ? '<button type="button" class="btn ghost" data-go="-1">Back</button>' : ''}
+            ${item.draft ? '<button type="button" class="link-btn" data-discard>Suggestion is wrong, discard it</button>' : ''}
+          </div>
+        </form>
+      </div>`;
+    const form = box.querySelector('form');
+    form.querySelector('[name="name"]').focus({ preventScroll: true });
+
+    const go = (step) => {
+      const at = queue.findIndex((i) => i.id === item.id);
+      queue = fillQueue(f);
+      const pos = queue.findIndex((i) => i.id === item.id);
+      const next = pos >= 0 ? queue[pos + step] : queue[Math.max(0, Math.min(at, queue.length - 1) + (step < 0 ? -1 : 0))];
+      f.at = (next || queue[0])?.id || '';
+      save();
+      draw();
+      window.scrollTo(0, 0);
+    };
+    box.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.go))));
+    box.querySelector('[data-discard]')?.addEventListener('click', async () => {
+      try { await state.api.draftDone(item.id, 'dismissed'); item.draft = null; toast('Suggestion discarded'); draw(); }
+      catch (err) { if (state.me) toast(err.message, true); }
+    });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector('[type="submit"]');
+      const note = form.querySelector('.conflict-note');
+      const want = {
+        name: form.elements.namedItem('name').value.trim(),
+        type: typeValue(form),
+        subtype: form.elements.namedItem('subtype').value.trim(),
+        origin: form.elements.namedItem('origin').value.trim(),
+        description: form.elements.namedItem('description').value.trim(),
+      };
+      if (!want.name) want.name = item.name; // a blank name keeps the old one
+      btn.disabled = true;
+      try {
+        for (const [k, v] of Object.entries(want)) {
+          if (v === (item[k] || '')) continue;
+          const res = await state.api.editItem(item.id, k, v, item[k] || '');
+          item[k] = res.value;
+          if (res.conflict) {
+            note.hidden = false;
+            note.textContent = `${res.by || 'Someone'} changed the ${k} while you were working. It now says “${res.value || '—'}”. Check it, then tap Save again.`;
+            const field = k === 'type' ? null : form.querySelector(`[name="${k}"]`);
+            if (field) field.value = res.value || '';
+            btn.disabled = false;
+            return;
+          }
+        }
+        if (item.draft) { await state.api.draftDone(item.id, 'used'); item.draft = null; }
+        toast('Saved');
+        go(1);
+      } catch (err) {
+        if (state.me) toast(err.message, true);
+        btn.disabled = false;
+      }
+    });
+  };
+  draw();
+
+  let t;
+  app.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('input', () => {
+    f[el.dataset.f] = el.value;
+    save();
+    clearTimeout(t);
+    t = setTimeout(() => { queue = fillQueue(f); draw(); }, el.dataset.f === 'q' ? 200 : 0);
+  }));
+}
+
 // ------------------------------------------------------------------ admin
 
 async function renderAdmin() {
   if (!state.me.is_admin) { location.hash = '#/'; return; }
   shell('admin', `
     <h1 class="page-title">Admin</h1>
-    <p class="page-sub">Make a personal link for each person and send it by text or email. Making a new link turns off that person's old one.</p>
+    <p class="page-sub">Make a personal link for each person and send it by text or email. Making a new link turns off that person's old one. "Can add info" gives someone the Add info screen for naming and describing items.</p>
     <div class="admin-sections">
       <section>
         <div class="eyebrow" style="margin-bottom:8px">People</div>
+        <p class="people-summary" id="people-summary"></p>
         <div class="people" id="people"><p class="loading">Loading…</p></div>
       </section>
       <section>
@@ -683,9 +1000,17 @@ async function renderAdmin() {
         <div class="actions">
           <button type="button" class="btn small ${p.has_link ? 'ghost' : ''}" data-new="${p.id}">${p.has_link ? 'New link' : 'Make link'}</button>
           ${p.has_link && p.id !== state.me.id ? `<button type="button" class="btn ghost small" data-off="${p.id}">Turn off</button>` : ''}
+          ${p.is_admin ? '' : `<button type="button" class="chip" data-editor="${p.id}" aria-pressed="${!!p.is_editor}">Can add info</button>`}
         </div>
       </div>`).join('');
     for (const [id, el] of panels) box.querySelector(`.person[data-id="${id}"]`)?.append(el);
+    const rankers = people.filter((p) => p.family_id != null);
+    const opened = rankers.filter((p) => p.last_seen_at).length;
+    const started = rankers.filter((p) => p.ranked > 0).length;
+    const total = rankers.reduce((n, p) => n + p.ranked, 0);
+    document.getElementById('people-summary').textContent =
+      `${rankers.filter((p) => p.has_link).length} of ${rankers.length} family members have a link, ${opened} have opened it, `
+      + `and ${started} have started ranking (${total} ranks in all).`;
   };
   try {
     people = await state.api.adminPeople();
@@ -698,6 +1023,17 @@ async function renderAdmin() {
   box.addEventListener('click', async (e) => {
     const nb = e.target.closest('[data-new]');
     const ob = e.target.closest('[data-off]');
+    const eb = e.target.closest('[data-editor]');
+    if (eb) {
+      const p = people.find((x) => x.id === Number(eb.dataset.editor));
+      try {
+        await state.api.adminSetEditor(p.id, !p.is_editor);
+        p.is_editor = !p.is_editor;
+        eb.setAttribute('aria-pressed', String(p.is_editor));
+        toast(p.is_editor ? `${p.name} can now use Add info` : `${p.name} no longer sees Add info`);
+      } catch (err) { if (state.me) toast(err.message, true); }
+      return;
+    }
     if (nb) {
       const p = people.find((x) => x.id === Number(nb.dataset.new));
       if (p.has_link && !confirmInline(nb, `This turns off ${p.name}'s current link. Tap again to continue.`)) return;
@@ -774,18 +1110,26 @@ function currentRoute() {
   if (h === '/family') return { name: 'family' };
   if (h === '/results') return { name: 'results' };
   if (h === '/admin') return { name: 'admin' };
+  if (h === '/fill') return { name: 'fill' };
   return { name: 'browse' };
 }
 
+let lastRoute = null;
 function route() {
   if (!state.me) return;
   const r = currentRoute();
-  if (r.name !== 'browse' && r.name !== 'item') window.scrollTo(0, 0);
   if (r.name === 'item') renderItem(r.id);
   else if (r.name === 'family') renderFamily();
   else if (r.name === 'results') renderResults();
   else if (r.name === 'admin') renderAdmin();
+  else if (r.name === 'fill') renderFill();
   else renderBrowse();
+  // Coming back from an item puts the list where it was; anything else starts at the top.
+  if (r.name !== 'item') {
+    const y = lastRoute === 'item' ? Number(getStored(`fi_scroll_${r.name}`, 'sessionStorage') || 0) : 0;
+    requestAnimationFrame(() => window.scrollTo(0, y));
+  }
+  lastRoute = r.name;
 }
 
 window.addEventListener('hashchange', () => {

@@ -92,6 +92,23 @@ create table if not exists app.item_edits (
 );
 
 -- One-time import support. Removed from use once the import is finished.
+-- Suggested name/type/description for an item, written from its photo and
+-- waiting for an editor to accept, fix or discard.
+create table if not exists app.item_drafts (
+  item_id      text primary key references app.items(id) on delete cascade,
+  name         text not null default '',
+  type         text not null default '',
+  subtype      text not null default '',
+  description  text not null default '',
+  status       text not null default 'open' check (status in ('open', 'used', 'dismissed')),
+  created_at   timestamptz not null default now(),
+  decided_by   int references app.people(id),
+  decided_at   timestamptz
+);
+
+-- Editors (for example Susan) get the "Add info" screen and see drafts.
+alter table app.people add column if not exists is_editor boolean not null default false;
+
 create table if not exists app.import_tokens (
   token_hash  bytea primary key,
   active      boolean not null default true,
@@ -111,7 +128,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
-                           'rankings','item_edits','import_tokens','photo_staging']
+                           'rankings','item_edits','item_drafts','import_tokens','photo_staging']
   loop
     execute format('alter table app.%I enable row level security', t);
     execute format('alter table app.%I force row level security', t);
@@ -126,7 +143,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
-                           'rankings','item_edits','import_tokens','photo_staging']
+                           'rankings','item_edits','item_drafts','import_tokens','photo_staging']
   loop
     if not exists (select 1 from pg_policies
                    where schemaname = 'app' and tablename = t and policyname = 'owner_all') then
@@ -203,6 +220,17 @@ begin
   return v;
 end $$;
 
+create or replace function app.editor_for(p_key text)
+returns app.people language plpgsql stable security definer set search_path = '' as $$
+declare v app.people;
+begin
+  v := app.person_for(p_key);
+  if not (v.is_admin or v.is_editor) then
+    raise exception 'editors only' using errcode = '42501';
+  end if;
+  return v;
+end $$;
+
 create or replace function app.check_import_token(p_token text)
 returns void language plpgsql stable security definer set search_path = '' as $$
 begin
@@ -226,7 +254,8 @@ begin
 
   select jsonb_build_object(
     'me', jsonb_build_object('id', me.id, 'name', me.name, 'role', me.role,
-                             'family_id', me.family_id, 'is_admin', me.is_admin),
+                             'family_id', me.family_id, 'is_admin', me.is_admin,
+                             'is_editor', me.is_admin or me.is_editor),
     'families', coalesce((
       select jsonb_agg(jsonb_build_object(
                'id', f.id, 'name', f.name,
@@ -255,7 +284,11 @@ begin
                  from app.rankings r where r.item_id = i.id), '{}'::jsonb),
                'family_best', res.family_best,
                'overall_best', res.overall_best,
-               'top_families', res.top_families)
+               'top_families', res.top_families,
+               'draft', (select jsonb_build_object('name', d.name, 'type', d.type,
+                                                   'subtype', d.subtype, 'description', d.description)
+                         from app.item_drafts d
+                         where d.item_id = i.id and d.status = 'open' and (me.is_admin or me.is_editor)))
              order by i.sort, i.id)
       from app.items i
       join app.item_results res on res.item_id = i.id
@@ -368,7 +401,7 @@ begin
   perform app.admin_for(p_key);
   return coalesce((
     select jsonb_agg(jsonb_build_object(
-             'id', p.id, 'name', p.name, 'role', p.role, 'is_admin', p.is_admin,
+             'id', p.id, 'name', p.name, 'role', p.role, 'is_admin', p.is_admin, 'is_editor', p.is_editor,
              'family_id', p.family_id, 'family', f.name,
              'has_link', p.link_key_hash is not null,
              'last_seen_at', p.last_seen_at,
@@ -423,6 +456,49 @@ begin
     insert into app.item_edits (item_id, person_id, field, old_value, new_value)
     values (p_item, me.id, 'hidden', was::text, p_hidden::text);
   end if;
+end $$;
+
+create or replace function public.fi_admin_set_editor(p_key text, p_person int, p_editor boolean)
+returns void language plpgsql volatile security definer set search_path = '' as $$
+begin
+  perform app.admin_for(p_key);
+  update app.people set is_editor = coalesce(p_editor, false) where id = p_person;
+  if not found then
+    raise exception 'unknown person' using errcode = 'P0002';
+  end if;
+end $$;
+
+-- Load suggested drafts: [{"id":"ITEM-0054","name":…,"type":…,"subtype":…,"description":…}, …].
+-- Only fills open drafts; a draft someone already used or discarded is left alone.
+create or replace function public.fi_admin_add_drafts(p_key text, p_drafts jsonb)
+returns int language plpgsql volatile security definer set search_path = '' as $$
+declare n int;
+begin
+  perform app.admin_for(p_key);
+  insert into app.item_drafts (item_id, name, type, subtype, description)
+  select d->>'id', left(btrim(coalesce(d->>'name', '')), 200), left(btrim(coalesce(d->>'type', '')), 100),
+         left(btrim(coalesce(d->>'subtype', '')), 100), left(btrim(coalesce(d->>'description', '')), 2000)
+  from jsonb_array_elements(p_drafts) d
+  where exists (select 1 from app.items i where i.id = d->>'id')
+  on conflict (item_id) do update
+    set name = excluded.name, type = excluded.type, subtype = excluded.subtype,
+        description = excluded.description, created_at = now()
+    where app.item_drafts.status = 'open';
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- An editor accepted ('used') or rejected ('dismissed') an item's draft.
+create or replace function public.fi_draft_done(p_key text, p_item text, p_status text)
+returns void language plpgsql volatile security definer set search_path = '' as $$
+declare me app.people;
+begin
+  me := app.editor_for(p_key);
+  if p_status not in ('used', 'dismissed') then
+    raise exception 'status must be used or dismissed' using errcode = '22023';
+  end if;
+  update app.item_drafts set status = p_status, decided_by = me.id, decided_at = now()
+  where item_id = p_item and status = 'open';
 end $$;
 
 -- ---------------------------------------------------------------- keep-alive

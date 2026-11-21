@@ -61,5 +61,7 @@ export function makeApi(key, onInvalidLink = () => {}) {
     adminNewLink: (person) => call('fi_admin_new_link', { p_person: person }),
     adminTurnOffLink: (person) => call('fi_admin_turn_off_link', { p_person: person }),
     adminSetHidden: (item, hidden) => call('fi_admin_set_hidden', { p_item: item, p_hidden: hidden }),
+    adminSetEditor: (person, editor) => call('fi_admin_set_editor', { p_person: person, p_editor: editor }),
+    draftDone: (item, status) => call('fi_draft_done', { p_item: item, p_status: status }),
   };
 }

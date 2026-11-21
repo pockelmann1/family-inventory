@@ -331,3 +331,33 @@ footer.site-footer { text-align: center; color: var(--muted); font-size: 14px; p
 .center-box .choices { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
 .center-box .choices .btn { width: 100%; min-height: var(--tap); }
 .conflict-note { color: #8b1d1d; font-size: 14px; margin: 6px 0 0; }
+
+/* Welcome card and progress on Browse */
+.welcome { max-width: 640px; margin: 0 auto 28px; padding: 20px 22px; background: var(--hl); border: 1px solid var(--line); }
+.welcome h2 { font-family: var(--serif); font-weight: 500; font-size: 26px; margin: 0 0 8px; }
+.welcome ol { margin: 0 0 16px; padding-left: 1.3em; font-size: 16px; line-height: 1.5; }
+.welcome li { margin-bottom: 6px; }
+.progress { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: center; margin: -8px auto 24px; font-size: 15px; color: var(--muted); }
+.progress b { color: var(--ink); }
+.progress .btn { display: inline-flex; align-items: center; text-decoration: none; }
+.pager { gap: 12px; }
+
+/* Type picker */
+.type-pick { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.type-pick .new-type[hidden] { display: none; }
+
+/* Add info screen */
+.fill-item { display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .fill-item { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 48px; align-items: start; } .fill-photo { position: sticky; top: 110px; } }
+.fill-photo { background: var(--tile); display: flex; align-items: center; justify-content: center; }
+.fill-photo img { max-width: 100%; max-height: 70vh; object-fit: contain; display: block; }
+.fill-form { display: flex; flex-direction: column; gap: 14px; }
+.fill-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.fill-form .input, .fill-form .select { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--ink); width: 100%; }
+.fill-form textarea.input { min-height: 110px; padding: 10px 12px; font-family: inherit; resize: vertical; }
+.fill-form .now { margin: 0; color: var(--muted); font-size: 14px; }
+.draft-note { margin: 0; padding: 10px 12px; background: var(--hl); font-size: 15px; }
+.suggested { text-transform: none; letter-spacing: 0; color: var(--gold); font-size: 12px; margin-left: 4px; }
+.fill-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 4px; }
+.people-summary { font-size: 15px; color: var(--muted); margin: 0 0 12px; }
+.csv-row { margin: -8px 0 12px; }
