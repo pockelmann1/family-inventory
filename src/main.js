@@ -205,7 +205,7 @@ const isPlaceholderName = (i) => /, photo \d+[a-z]?$/i.test(i.name) || i.name ==
 const needs = (i) => ({ name: isPlaceholderName(i), type: !i.type, description: !i.description });
 
 // Other families' ranks stay out of Browse and the item page for people who are ranking,
-// so nobody ranks against what they see (they are on My family and Results).
+// so nobody ranks against what they see (their own family is on My family; Results is admin only).
 const seesOthers = () => !canRank();
 
 // "Most wanted by Susan's family (best rank 2)", or several families when tied.
@@ -223,7 +223,7 @@ function shell(active, content) {
   const tabs = [
     ['browse', '#/', 'Browse'],
     ['family', '#/family', 'My family'],
-    ['results', '#/results', 'Results'],
+    ...(state.me.is_admin ? [['results', '#/results', 'Results']] : []),
   ];
   if (state.me.is_editor) tabs.push(['fill', '#/fill', 'Add info']);
   if (state.me.is_admin) tabs.push(['admin', '#/admin', 'Admin']);
@@ -348,8 +348,8 @@ function welcomeCard() {
       <ol>
         <li>Look through everything from the house. Tap a photo to see it larger.</li>
         <li>Under anything you would like, tap a number: <b>1</b> means you want it most, <b>5</b> means a little.</li>
-        <li>Rank as many or as few as you like, and change them any time. Other people's ranks are kept off this page so you can rank with a clear mind. Your family's ranks are on My family, and everyone's are on Results.</li>
-        <li>Each family's best (lowest) number counts for that family. Results shows who wants what.</li>
+        <li>Rank as many or as few as you like, and change them any time. Other people's ranks are kept off this page so you can rank with a clear mind. Your family's ranks are on My family.</li>
+        <li>Each family's best (lowest) number counts for that family.</li>
       </ol>
       <button type="button" class="btn" id="welcome-ok">Got it</button>
     </section>`;
@@ -777,6 +777,7 @@ function renderFamily() {
 // ------------------------------------------------------------------ results
 
 function renderResults() {
+  if (!state.me.is_admin) { location.hash = '#/'; return; } // Results is for the admin only
   const f = loadView('fi_results', { q: '', room: '', type: '', view: 'ranked', fam: '', sort: 'best' });
   shell('results', `
     <h1 class="page-title">Results</h1>

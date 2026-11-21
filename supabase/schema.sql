@@ -279,12 +279,16 @@ begin
                         order by ip.sort_order)
                  from app.item_photos ip join app.photos ph on ph.id = ip.photo_id
                  where ip.item_id = i.id), '[]'::jsonb),
+               -- Family members see only their own family's ranks; Results is for the admin.
                'ranks', coalesce((
                  select jsonb_object_agg(r.person_id::text, r.rank)
-                 from app.rankings r where r.item_id = i.id), '{}'::jsonb),
-               'family_best', res.family_best,
-               'overall_best', res.overall_best,
-               'top_families', res.top_families,
+                 from app.rankings r join app.people rp on rp.id = r.person_id
+                 where r.item_id = i.id and (me.is_admin or rp.family_id = me.family_id)), '{}'::jsonb),
+               'family_best', case when me.is_admin then res.family_best
+                                   else coalesce((select jsonb_object_agg(k, v) from jsonb_each(res.family_best) as fb(k, v)
+                                                  where k = me.family_id::text), '{}'::jsonb) end,
+               'overall_best', case when me.is_admin then res.overall_best end,
+               'top_families', case when me.is_admin then res.top_families else '[]'::jsonb end,
                'draft', (select jsonb_build_object('name', d.name, 'type', d.type,
                                                    'subtype', d.subtype, 'description', d.description)
                          from app.item_drafts d
@@ -321,12 +325,15 @@ begin
     raise exception 'rank must be 1 to 5' using errcode = '22023';
   end if;
 
+  -- Same rule as fi_load: only the caller's own family's ranks come back.
   select jsonb_build_object(
            'ranks', coalesce((select jsonb_object_agg(r.person_id::text, r.rank)
-                              from app.rankings r where r.item_id = p_item), '{}'::jsonb),
-           'family_best', res2.family_best,
-           'overall_best', res2.overall_best,
-           'top_families', res2.top_families)
+                              from app.rankings r join app.people rp on rp.id = r.person_id
+                              where r.item_id = p_item and rp.family_id = me.family_id), '{}'::jsonb),
+           'family_best', coalesce((select jsonb_object_agg(k, v) from jsonb_each(res2.family_best) as fb(k, v)
+                                    where k = me.family_id::text), '{}'::jsonb),
+           'overall_best', null,
+           'top_families', '[]'::jsonb)
     into res
   from app.item_results res2 where res2.item_id = p_item;
   return res;

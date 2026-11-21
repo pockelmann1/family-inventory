@@ -30,8 +30,8 @@ anything. "Who" says which check it runs.
 
 | Function | Who | What it does |
 | --- | --- | --- |
-| `fi_load(key)` | anyone with a link | Everything for the screens. Hidden items only for admin; Drive links only for admin; drafts only for editors and admin. Updates `last_seen_at`. |
-| `fi_set_rank(key, item, rank)` | family members | Sets 1 to 5, or clears with `null`. Returns the item's new ranks and results. |
+| `fi_load(key)` | anyone with a link | Everything for the screens. Hidden items only for admin; Drive links only for admin; drafts only for editors and admin. Family members get only their own family's ranks and family best (no overall best or most-wanted families); the admin gets everything. Updates `last_seen_at`. |
+| `fi_set_rank(key, item, rank)` | family members | Sets 1 to 5, or clears with `null`. Returns the item's new ranks and family best for the caller's own family only. |
 | `fi_edit_item(key, item, field, value, expected)` | editors and admin | Edits name, type, subtype, origin or description, and logs it. If `expected` no longer matches (someone else saved first) it saves nothing and returns `conflict: true` with the current value. |
 | `fi_item_history(key, item)` | anyone with a link | Edit history, newest first. |
 | `fi_draft_done(key, item, status)` | editors, admin | Marks a suggestion `used` or `dismissed`. |
