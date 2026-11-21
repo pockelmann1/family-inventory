@@ -125,7 +125,7 @@ function rankerHtml(item, large = false) {
   const mine = myRank(item);
   return `
     <div class="ranker${large ? ' large' : ''}" data-item="${esc(item.id)}" role="group" aria-label="My rank for ${esc(item.name)}">
-      ${large ? '<span class="label">My rank</span>' : ''}
+      ${large ? '<span class="label">My rank <span class="hint">1 = want most</span></span>' : ''}
       ${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-rank="${n}" aria-pressed="${mine === n}" aria-label="Rank ${n}">${n}</button>`).join('')}
       ${large && mine != null ? '<button type="button" class="clear" data-rank="">Clear</button>' : ''}
     </div>`;
@@ -203,6 +203,7 @@ function renderBrowse() {
     <div class="grid" id="grid"></div>`);
 
   const draw = () => {
+    if (!document.getElementById('grid')) return; // left the page before the search debounce fired
     const list = filteredItems(f);
     document.getElementById('count').textContent = `${list.length} of ${state.items.length} items`;
     document.getElementById('grid').innerHTML = list.length
@@ -217,7 +218,7 @@ function renderBrowse() {
             ${rankerHtml(i)}
           </div>
         </article>`).join('')
-      : '<p class="empty-state">Nothing matches. Try clearing a filter.</p>';
+      : '<div class="empty-state"><p>Nothing matches your search and filters.</p><button type="button" class="btn ghost" id="clear-filters">Clear search and filters</button></div>';
   };
   draw();
 
@@ -233,6 +234,12 @@ function renderBrowse() {
   const y = Number(getStored('fi_scroll', 'sessionStorage') || 0);
   if (y) requestAnimationFrame(() => window.scrollTo(0, y));
 }
+
+document.addEventListener('click', (e) => {
+  if (e.target.id !== 'clear-filters') return;
+  setStored(FILTERS, null, 'sessionStorage');
+  renderBrowse();
+});
 
 window.addEventListener('scroll', () => {
   if (currentRoute().name === 'browse') setStored('fi_scroll', String(window.scrollY), 'sessionStorage');
@@ -290,8 +297,8 @@ function renderItem(id) {
       <div>
         <div class="eyebrow">${esc(item.room)}${item.photo_no ? ` · Photo ${esc(item.photo_no)}` : ''} · ${esc(item.id)}</div>
         <h1 class="item-title" id="title">${esc(item.name)}</h1>
-        <div class="best" data-best="${esc(item.id)}" style="color:var(--muted);font-size:13px">${bestLine(item)}</div>
-        <div style="margin-top:16px">${rankerHtml(item, true)}</div>
+        <div class="best" data-best="${esc(item.id)}">${bestLine(item)}</div>
+        ${canRank() ? `<div class="rank-box">${rankerHtml(item, true)}</div>` : ''}
         <dl class="facts" id="facts"></dl>
         <h2 class="section-title">Who wants it</h2>
         <div class="who-ranked" id="who"></div>
@@ -385,7 +392,7 @@ function renderItem(id) {
   const loadHistory = async () => {
     const ul = document.getElementById('history');
     ul.hidden = false;
-    ul.innerHTML = '<li>Loading…</li>';
+    ul.innerHTML = '<li class="loading">Loading…</li>';
     try {
       const rows = await state.api.history(item.id);
       ul.innerHTML = rows.length
@@ -444,7 +451,7 @@ function rankCell(r) {
 function miniItem(i) {
   const p = photoOf(i);
   return `<a class="mini" href="#/item/${esc(i.id)}">${p?.thumb ? `<img src="${esc(p.thumb)}" alt="" loading="lazy" />` : '<span class="ph"></span>'}
-    <span><span class="t">${esc(i.name)}</span><br><span class="s">${esc(i.room)} · ${esc(i.id)}</span></span></a>`;
+    <span><span class="t">${esc(i.name)}</span><br><span class="s">${esc(i.room)}&nbsp;· <span class="nw">${esc(i.id)}</span></span></span></a>`;
 }
 
 function renderFamily() {
@@ -467,8 +474,8 @@ function renderFamily() {
     const rows = state.items.filter((i) => showAll || fam.members.some((m) => i.ranks[String(m.id)] != null));
     document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
     document.getElementById('tbl').innerHTML = `
-      <thead><tr><th>Item</th>${fam.members.map((m) => `<th class="num ${m.id === state.me.id ? 'me-col' : ''}">${esc(m.name)}</th>`).join('')}<th class="num">Family best</th></tr></thead>
-      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td>${fam.members.map((m) => `<td class="num ${m.id === state.me.id ? 'me-col' : ''}">${rankCell(i.ranks[String(m.id)])}</td>`).join('')}<td class="num">${rankCell(i.family_best[String(fam.id)])}</td></tr>`).join('')
+      <thead><tr><th>Item</th><th class="num key">Family best</th>${fam.members.map((m) => `<th class="num ${m.id === state.me.id ? 'me-col' : ''}">${m.id === state.me.id ? 'You' : esc(m.name)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td><td class="num key">${rankCell(i.family_best[String(fam.id)])}</td>${fam.members.map((m) => `<td class="num ${m.id === state.me.id ? 'me-col' : ''}">${rankCell(i.ranks[String(m.id)])}</td>`).join('')}</tr>`).join('')
         || `<tr><td colspan="${fam.members.length + 2}" class="empty-state">Nobody in your family has ranked anything yet.</td></tr>`}</tbody>`;
   };
   draw();
@@ -503,8 +510,8 @@ function renderResults() {
     rows = [...rows].sort((a, b) => (a.overall_best ?? 9) - (b.overall_best ?? 9) || a.id.localeCompare(b.id));
     document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
     document.getElementById('tbl').innerHTML = `
-      <thead><tr><th>Item</th>${state.families.map((fm) => `<th class="num">${esc(fm.name)}</th>`).join('')}<th class="num">Overall</th><th>Top interest</th></tr></thead>
-      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td>${state.families.map((fm) => `<td class="num">${rankCell(i.family_best[String(fm.id)])}</td>`).join('')}<td class="num">${rankCell(i.overall_best)}</td><td>${esc(i.top_families.map(familyName).join(', '))}</td></tr>`).join('')
+      <thead><tr><th>Item</th><th class="num key">Best</th><th class="key">Top interest</th>${state.families.map((fm) => `<th class="num">${esc(fm.name)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td><td class="num key">${rankCell(i.overall_best)}</td><td class="key who">${esc(i.top_families.map(familyName).join(', '))}</td>${state.families.map((fm) => `<td class="num">${rankCell(i.family_best[String(fm.id)])}</td>`).join('')}</tr>`).join('')
         || `<tr><td colspan="${state.families.length + 3}" class="empty-state">No ranks yet.</td></tr>`}</tbody>`;
   };
   draw();
