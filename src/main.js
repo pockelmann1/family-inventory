@@ -128,6 +128,7 @@ const state = {
   items: [],
   byId: new Map(),
   people: new Map(), // id -> { name, role, family_id }
+  top10: {}, // personId -> [itemId, ...] for the lists this person may see
   loadedAt: 0,
 };
 
@@ -136,6 +137,7 @@ function ingest(data) {
   state.families = data.families;
   state.items = data.items;
   state.byId = new Map(data.items.map((i) => [i.id, i]));
+  state.top10 = data.top10 || {};
   state.people = new Map();
   for (const f of data.families) for (const m of f.members) state.people.set(String(m.id), { ...m, family_id: f.id });
   state.loadedAt = Date.now();
@@ -205,7 +207,7 @@ const isPlaceholderName = (i) => /, photo \d+[a-z]?$/i.test(i.name) || i.name ==
 const needs = (i) => ({ name: isPlaceholderName(i), type: !i.type, description: !i.description });
 
 // Other families' ranks stay out of Browse and the item page for people who are ranking,
-// so nobody ranks against what they see (they are on My family and Results).
+// so nobody ranks against what they see (their own family is on My family; Results is admin only).
 const seesOthers = () => !canRank();
 
 // "Most wanted by Susan's family (best rank 2)", or several families when tied.
@@ -223,7 +225,7 @@ function shell(active, content) {
   const tabs = [
     ['browse', '#/', 'Browse'],
     ['family', '#/family', 'My family'],
-    ['results', '#/results', 'Results'],
+    ...(state.me.is_admin ? [['results', '#/results', 'Results']] : []),
   ];
   if (state.me.is_editor) tabs.push(['fill', '#/fill', 'Add info']);
   if (state.me.is_admin) tabs.push(['admin', '#/admin', 'Admin']);
@@ -294,6 +296,8 @@ document.addEventListener('click', async (e) => {
     });
     document.querySelectorAll(`[data-best="${CSS.escape(id)}"]`).forEach((el) => (el.innerHTML = bestLine(fresh)));
     if (currentRoute().name === 'item') renderWhoRanked(fresh);
+    if (next == null && myTop().includes(id)) state.top10[String(state.me.id)] = myTop().filter((x) => x !== id);
+    refreshTopLine();
     const prog = document.getElementById('progress');
     if (prog) prog.outerHTML = progressBar();
     toast(next == null ? 'Rank cleared' : `Ranked ${next}`);
@@ -348,8 +352,8 @@ function welcomeCard() {
       <ol>
         <li>Look through everything from the house. Tap a photo to see it larger.</li>
         <li>Under anything you would like, tap a number: <b>1</b> means you want it most, <b>5</b> means a little.</li>
-        <li>Rank as many or as few as you like, and change them any time. Other people's ranks are kept off this page so you can rank with a clear mind. Your family's ranks are on My family, and everyone's are on Results.</li>
-        <li>Each family's best (lowest) number counts for that family. Results shows who wants what.</li>
+        <li>Rank as many or as few as you like, and change them any time. Other people's ranks are kept off this page so you can rank with a clear mind. Your family's ranks are on My family.</li>
+        <li>Each family's best (lowest) number counts for that family.</li>
       </ol>
       <button type="button" class="btn" id="welcome-ok">Got it</button>
     </section>`;
@@ -507,6 +511,7 @@ function renderItem(id) {
         <div class="eyebrow">${esc(item.room)}${item.photo_no ? ` · Photo ${esc(item.photo_no)}` : ''} · ${esc(item.id)}</div>
         <h1 class="item-title" id="title">${esc(item.name)}</h1>
         <div class="best" data-best="${esc(item.id)}">${bestLine(item)}</div>
+        ${canRank() ? `<div class="top-line" id="top-line" data-item="${esc(item.id)}">${topLineHtml(item)}</div>` : ''}
         ${canRank() ? `<div class="rank-box">${rankerHtml(item, true)}</div>` : ''}
         <dl class="facts" id="facts"></dl>
         <h2 class="section-title">${seesOthers() ? 'Who wants it' : 'Your family'}</h2>
@@ -561,7 +566,7 @@ function renderItem(id) {
       <div class="fact" data-field="${f}">
         <dt>${label}</dt>
         <dd class="${item[f] ? '' : 'empty'}">${item[f] ? esc(item[f]) : 'Not filled in'}</dd>
-        <button type="button" class="link-btn" data-edit="${f}">Edit</button>
+        ${state.me.is_editor ? `<button type="button" class="link-btn" data-edit="${f}">Edit</button>` : '<span></span>'}
       </div>`).join('');
   };
   drawFacts();
@@ -739,7 +744,11 @@ function renderFamily() {
   const f = loadView('fi_family', { q: '', room: '', type: '', who: 'any', sort: 'best' });
   shell('family', `
     <h1 class="page-title">${esc(fam.name)}'s family</h1>
-    <p class="page-sub">What everyone in your family has ranked. The family best is the lowest number any of you gave.</p>
+    <p class="page-sub">Your top 10, your family's top 10s, and everything your family has ranked.</p>
+    ${canRank() ? myTopHtml() : ''}
+    ${(() => { const t = familyTopsHtml(fam); return t ? `<section class="family-tops"><div class="top10-head"><h2 class="section-title">Your family's top 10s</h2><p class="top10-note">The family top 10 adds up everyone's lists: 1st place is worth 10 points, 10th is worth 1.</p></div>${t}</section>` : ''; })()}
+    <h2 class="section-title">Everything your family ranked</h2>
+    <p class="table-note">The family best is the lowest number any of you gave.</p>
     ${tableToolbar(f, (opt) => `
       <select class="select" data-f="who" aria-label="Show">${opt('any', 'Ranked by anyone in the family', f.who)}${opt('me', 'Ranked by me', f.who)}${fam.members.filter((m) => m.id !== state.me.id).map((m) => opt(String(m.id), `Ranked by ${m.name}`, f.who)).join('')}${opt('notme', 'Family ranked, I have not', f.who)}${opt('all', 'All items', f.who)}</select>
       <select class="select" data-f="sort" aria-label="Sort">${opt('best', 'Sort: family best', f.sort)}${opt('mine', 'Sort: my rank', f.sort)}${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}</select>`)}
@@ -772,15 +781,340 @@ function renderFamily() {
   };
   draw();
   wireToolbar(f, 'fi_family', draw);
+  wireMyTop();
 }
+
+// ------------------------------------------------------------------ top 10
+
+// Each family member keeps an ordered top 10 of items they have ranked.
+// state.top10 = { personId: [itemId, ...] } holds the lists this person may see.
+const TOP_N = 10;
+const myTop = () => [...(state.top10[String(state.me.id)] || [])];
+const topItems = (ids) => ids.map((id) => state.byId.get(id)).filter(Boolean);
+
+async function saveTop(ids, msg) {
+  const before = myTop();
+  state.top10[String(state.me.id)] = ids;
+  drawMyTop();
+  refreshTopLine();
+  try {
+    const saved = await state.api.setTop10(ids);
+    state.top10[String(state.me.id)] = saved;
+    if (msg) toast(msg);
+  } catch (err) {
+    if (!state.me) return;
+    state.top10[String(state.me.id)] = before;
+    drawMyTop();
+    refreshTopLine();
+    toast(err.message, true);
+  }
+}
+
+function topThumb(i) {
+  const p = photoOf(i);
+  return p?.thumb ? `<img src="${esc(p.thumb)}" alt="" loading="lazy" />` : '<span class="ph"></span>';
+}
+
+// "Your top 10": ten numbered places. Drag the handle (or use the arrows) to reorder.
+function myTopHtml() {
+  return `
+    <section class="top10" aria-labelledby="top10-h">
+      <div class="top10-head">
+        <h2 class="section-title" id="top10-h">Your top 10</h2>
+        <p class="top10-note">Your family and the admin can see this. Drag <span aria-hidden="true">⠿</span> to reorder.</p>
+      </div>
+      <ol class="slots" id="my-slots"></ol>
+      <div class="picker" id="top-picker" hidden>
+        <div class="picker-head">
+          <input class="input" type="search" id="picker-q" placeholder="Search the things you ranked" aria-label="Search the things you ranked" />
+          <button type="button" class="link-btn" id="picker-close">Close</button>
+        </div>
+        <ul class="picker-list" id="picker-list"></ul>
+      </div>
+    </section>`;
+}
+
+function drawMyTop() {
+  const box = document.getElementById('my-slots');
+  if (!box) return;
+  const items = topItems(myTop());
+  const rows = [];
+  for (let n = 1; n <= TOP_N; n++) {
+    const i = items[n - 1];
+    if (i) {
+      rows.push(`
+        <li class="slot filled" data-id="${esc(i.id)}">
+          <button type="button" class="handle" aria-label="Drag ${esc(i.name)} to a new place" title="Drag to reorder"><span aria-hidden="true">⠿</span></button>
+          <span class="n">${n}</span>
+          <a class="slot-item" href="#/item/${esc(i.id)}">${topThumb(i)}
+            <span><span class="t">${esc(i.name)}</span><span class="s">Your rank ${myRank(i) ?? '–'} · ${esc(i.room)}</span></span></a>
+          <span class="slot-tools">
+            <button type="button" class="sq" data-move="-1" aria-label="Move ${esc(i.name)} up" ${n === 1 ? 'disabled' : ''}>↑</button>
+            <button type="button" class="sq" data-move="1" aria-label="Move ${esc(i.name)} down" ${n === items.length ? 'disabled' : ''}>↓</button>
+            <button type="button" class="sq x" data-remove aria-label="Take ${esc(i.name)} out of your top 10">×</button>
+          </span>
+        </li>`);
+    } else {
+      rows.push(`
+        <li class="slot empty">
+          <span class="handle-space"></span>
+          <span class="n">${n}</span>
+          <span class="slot-item"><span class="ph"></span><span class="s">Empty</span></span>
+          ${n === items.length + 1 ? '<button type="button" class="btn ghost small" data-add>Add</button>' : ''}
+        </li>`);
+    }
+  }
+  box.innerHTML = rows.join('');
+}
+
+function drawPicker() {
+  const list = document.getElementById('picker-list');
+  if (!list) return;
+  const q = document.getElementById('picker-q').value.trim().toLowerCase();
+  const inTop = new Set(myTop());
+  const cands = state.items
+    .filter((i) => myRank(i) != null && !inTop.has(i.id) && !i.hidden && matchesQuery(i, q))
+    .sort((a, b) => myRank(a) - myRank(b) || SORTS.catalog(a, b));
+  list.innerHTML = cands.length
+    ? cands.map((i) => `
+      <li><span class="slot-item">${topThumb(i)}<span><span class="t">${esc(i.name)}</span><span class="s">Your rank ${myRank(i)} · ${esc(i.room)} · ${esc(i.id)}</span></span></span>
+        <button type="button" class="btn ghost small" data-pick="${esc(i.id)}">Add</button></li>`).join('')
+    : `<li class="empty-state">${q ? 'Nothing you ranked matches.' : 'Everything you ranked is already in your top 10. Rank more items on Browse to add them.'}</li>`;
+}
+
+function wireMyTop() {
+  const box = document.getElementById('my-slots');
+  if (!box) return;
+  drawMyTop();
+  const picker = document.getElementById('top-picker');
+  const openPicker = () => {
+    picker.hidden = false;
+    document.getElementById('picker-q').value = '';
+    drawPicker();
+    document.getElementById('picker-q').focus({ preventScroll: true });
+    picker.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+  box.addEventListener('click', (e) => {
+    if (e.target.closest('[data-add]')) return openPicker();
+    const row = e.target.closest('.slot.filled');
+    if (!row) return;
+    const ids = myTop();
+    const at = ids.indexOf(row.dataset.id);
+    const mv = e.target.closest('[data-move]');
+    if (mv) {
+      const to = at + Number(mv.dataset.move);
+      if (to < 0 || to >= ids.length) return;
+      ids.splice(to, 0, ids.splice(at, 1)[0]);
+      saveTop(ids).then(() => document.querySelector(`.slot[data-id="${CSS.escape(row.dataset.id)}"] [data-move="${mv.dataset.move}"]:not(:disabled)`)?.focus());
+      return;
+    }
+    if (e.target.closest('[data-remove]')) {
+      ids.splice(at, 1);
+      saveTop(ids, 'Taken out of your top 10');
+    }
+  });
+  document.getElementById('picker-close').addEventListener('click', () => { picker.hidden = true; });
+  document.getElementById('picker-q').addEventListener('input', drawPicker);
+  document.getElementById('picker-list').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-pick]');
+    if (!b) return;
+    const ids = myTop();
+    if (ids.length >= TOP_N) { toast('Your top 10 is full. Take one out first.', true); return; }
+    ids.push(b.dataset.pick);
+    saveTop(ids, `Added as number ${ids.length}`);
+    if (ids.length >= TOP_N) picker.hidden = true; else drawPicker();
+  });
+  wireDrag(box);
+}
+
+// Drag to reorder, for mouse and touch alike (pointer events on the handle only,
+// so the page still scrolls normally everywhere else).
+function wireDrag(box) {
+  let drag = null;
+  box.addEventListener('pointerdown', (e) => {
+    const handle = e.target.closest('.handle');
+    if (!handle || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    const row = handle.closest('.slot.filled');
+    const rows = [...box.querySelectorAll('.slot.filled')];
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const tops = rows.map((r) => r.getBoundingClientRect().top + window.scrollY);
+    const h = row.getBoundingClientRect().height;
+    drag = { handle, row, rows, tops, h, from: rows.indexOf(row), to: rows.indexOf(row), startY: e.clientY + window.scrollY, y: e.clientY };
+    row.classList.add('dragging');
+    box.classList.add('sorting');
+  });
+  const move = () => {
+    if (!drag) return;
+    const pageY = drag.y + window.scrollY;
+    const dy = pageY - drag.startY;
+    drag.row.style.transform = `translateY(${dy}px)`;
+    const centre = drag.tops[drag.from] + dy + drag.h / 2;
+    let to = drag.from;
+    drag.tops.forEach((t, k) => {
+      const mid = t + drag.h / 2;
+      if (k < drag.from && centre < mid) to = Math.min(to, k);
+      if (k > drag.from && centre > mid) to = Math.max(to, k);
+    });
+    drag.to = to;
+    drag.rows.forEach((r, k) => {
+      if (r === drag.row) return;
+      let shift = 0;
+      if (drag.from < to && k > drag.from && k <= to) shift = -drag.h;
+      if (drag.from > to && k >= to && k < drag.from) shift = drag.h;
+      r.style.transform = shift ? `translateY(${shift}px)` : '';
+    });
+  };
+  let raf = 0;
+  const autoscroll = () => {
+    if (!drag) return;
+    const edge = 70;
+    const v = drag.y < edge ? -(edge - drag.y) / 4 : drag.y > innerHeight - edge ? (drag.y - (innerHeight - edge)) / 4 : 0;
+    if (v) { window.scrollBy(0, v); move(); }
+    raf = requestAnimationFrame(autoscroll);
+  };
+  box.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    drag.y = e.clientY;
+    if (!raf) raf = requestAnimationFrame(autoscroll);
+    move();
+  });
+  const end = () => {
+    if (!drag) return;
+    cancelAnimationFrame(raf); raf = 0;
+    const { from, to, rows } = drag;
+    rows.forEach((r) => { r.style.transform = ''; });
+    drag.row.classList.remove('dragging');
+    box.classList.remove('sorting');
+    drag = null;
+    if (from === to) return;
+    const ids = myTop();
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    saveTop(ids, `Moved to number ${to + 1}`);
+  };
+  box.addEventListener('pointerup', end);
+  box.addEventListener('pointercancel', end);
+  box.addEventListener('lostpointercapture', end);
+}
+
+// A read-only numbered strip of someone's top 10.
+function topStripHtml(person, ids, sharedSet) {
+  const items = topItems(ids);
+  const isMe = state.me && person.id === state.me.id;
+  const places = [];
+  for (let k = 0; k < TOP_N; k++) {
+    const i = items[k];
+    places.push(i ? `
+        <li><a href="#/item/${esc(i.id)}">
+          <span class="ph-box">${topThumb(i)}<span class="badge">${k + 1}</span></span>
+          <span class="t">${esc(i.name)}</span>
+          ${sharedSet && sharedSet.has(i.id) ? '<span class="shared">Shared pick</span>' : ''}
+        </a></li>` : `
+        <li class="none"><span class="ph-box"><span class="ph"></span><span class="badge">${k + 1}</span></span><span class="t">Not picked</span></li>`);
+  }
+  return `
+    <div class="strip-wrap${isMe ? ' me' : ''}${items.length ? '' : ' blank'}">
+      <h3 class="strip-title">${isMe ? 'You' : esc(person.name)} <span class="s">${items.length === TOP_N ? '' : items.length ? `${items.length} of 10 picked` : 'Nothing picked yet'}</span></h3>
+      <ol class="strip">${places.join('')}</ol>
+    </div>`;
+}
+
+// Items that two or more people in a group put in their top 10.
+function sharedPicks(people) {
+  const count = new Map();
+  for (const p of people) for (const id of state.top10[String(p.id)] || []) count.set(id, (count.get(id) || 0) + 1);
+  return new Set([...count].filter(([, n]) => n > 1).map(([id]) => id));
+}
+
+// The family top 10, worked out from everyone's lists: 1st place is worth 10 points,
+// 10th is worth 1, and points add up across the family. Ties go to the item someone
+// placed higher, then to the item more people picked, then to catalog order.
+function familyTop(fam) {
+  const score = new Map();
+  for (const m of fam.members) {
+    (state.top10[String(m.id)] || []).forEach((id, k) => {
+      if (!state.byId.has(id)) return;
+      const e = score.get(id) || { id, pts: 0, best: 99, who: [] };
+      e.pts += TOP_N - k; e.best = Math.min(e.best, k + 1); e.who.push({ person: m, place: k + 1 });
+      score.set(id, e);
+    });
+  }
+  const order = (id) => state.items.indexOf(state.byId.get(id));
+  return [...score.values()]
+    .sort((a, b) => b.pts - a.pts || a.best - b.best || b.who.length - a.who.length || order(a.id) - order(b.id))
+    .slice(0, TOP_N);
+}
+
+function familyStripHtml(fam, title = 'Family top 10') {
+  const top = familyTop(fam);
+  const places = [];
+  for (let k = 0; k < TOP_N; k++) {
+    const e = top[k]; const i = e && state.byId.get(e.id);
+    const who = e && e.who.map((w) => `${w.person.id === state.me?.id ? 'You' : esc(w.person.name)} ${w.place}`).join(' · ');
+    places.push(i ? `
+        <li><a href="#/item/${esc(i.id)}">
+          <span class="ph-box">${topThumb(i)}<span class="badge">${k + 1}</span></span>
+          <span class="txt"><span class="t">${esc(i.name)}</span><span class="who">${who}</span></span>
+        </a></li>` : `
+        <li class="none"><span class="ph-box"><span class="ph"></span><span class="badge">${k + 1}</span></span><span class="t">Not enough picks yet</span></li>`);
+  }
+  return `
+    <div class="strip-wrap fam">
+      <h3 class="strip-title">${esc(title)} <span class="s">from everyone's lists</span></h3>
+      <ol class="strip">${places.join('')}</ol>
+    </div>`;
+}
+
+function familyTopsHtml(fam) {
+  if (!fam.members.some((m) => (state.top10[String(m.id)] || []).length)) return '';
+  const shared = sharedPicks(fam.members);
+  return `<div class="tops-compare" style="--cols:${fam.members.length + 1}">${familyStripHtml(fam)}${fam.members
+    .map((m) => topStripHtml(m, state.top10[String(m.id)] || [], shared)).join('')}</div>`;
+}
+
+// Item page: add to / remove from your top 10.
+function topLineHtml(item) {
+  if (!canRank()) return '';
+  const ids = myTop();
+  const at = ids.indexOf(item.id);
+  if (at >= 0) return `<span class="badge-sq">${at + 1}</span> In your top 10 · <button type="button" class="link-btn" data-top-remove>Remove</button>`;
+  if (myRank(item) == null) return '<span class="muted">Rank it to add it to your top 10.</span>';
+  if (ids.length >= TOP_N) return '<span class="muted">Your top 10 is full.</span> <a href="#/family">Change it on My family</a>';
+  return `<button type="button" class="btn ghost small" data-top-add>Add to my top 10</button>`;
+}
+function refreshTopLine() {
+  const el = document.getElementById('top-line');
+  if (!el) return;
+  const item = state.byId.get(el.dataset.item);
+  if (item) el.innerHTML = topLineHtml(item);
+}
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('#top-line');
+  if (!el) return;
+  const id = el.dataset.item;
+  const ids = myTop();
+  if (e.target.closest('[data-top-add]') && ids.length < TOP_N && !ids.includes(id)) {
+    ids.push(id);
+    saveTop(ids, `Added to your top 10 as number ${ids.length}`);
+  } else if (e.target.closest('[data-top-remove]')) {
+    saveTop(ids.filter((x) => x !== id), 'Taken out of your top 10');
+  }
+});
 
 // ------------------------------------------------------------------ results
 
 function renderResults() {
+  if (!state.me.is_admin) { location.hash = '#/'; return; } // Results is for the admin only
   const f = loadView('fi_results', { q: '', room: '', type: '', view: 'ranked', fam: '', sort: 'best' });
   shell('results', `
     <h1 class="page-title">Results</h1>
     <p class="page-sub">For each item: the best (lowest) rank anyone gave, which family wants it most, and each family's best rank. Ties are listed together.</p>
+    ${(() => {
+      const fams = state.families.map((fm) => ({ fm, html: familyTopsHtml(fm) })).filter((x) => x.html);
+      return fams.length ? `<section class="family-tops admin-tops"><div class="top10-head"><h2 class="section-title">Family top 10s</h2><p class="top10-note">Each family's list adds up its members' lists: 1st place is worth 10 points, 10th is worth 1.</p></div>
+        <div class="tops-compare" style="--cols:${fams.length}">${fams.map((x) => familyStripHtml(x.fm, `${x.fm.name}'s family`)).join('')}</div>
+        <h3 class="strip-title each-title">Each person's list</h3>${fams.map((x) => `<details class="fam-tops"><summary>${esc(x.fm.name)}'s family</summary>${x.html}</details>`).join('')}</section>` : '';
+    })()}
     ${tableToolbar(f, (opt) => `
       <select class="select" data-f="view" aria-label="Show">${opt('ranked', 'Items anyone ranked', f.view)}${opt('multi', 'Wanted by 2 or more families', f.view)}${opt('tied', 'Tied between families', f.view)}${opt('none', 'Nobody has ranked yet', f.view)}${opt('all', 'All items', f.view)}</select>
       <select class="select" data-f="fam" aria-label="Family">${opt('', 'Any family', f.fam)}${state.families.map((fm) => opt(String(fm.id), `Most wanted by ${fm.name}'s family`, f.fam)).join('')}</select>
@@ -1000,7 +1334,7 @@ async function renderAdmin() {
   if (!state.me.is_admin) { location.hash = '#/'; return; }
   shell('admin', `
     <h1 class="page-title">Admin</h1>
-    <p class="page-sub">Make a personal link for each person and send it by text or email. Making a new link turns off that person's old one. "Can add info" gives someone the Add info screen for naming and describing items.</p>
+    <p class="page-sub">Make a personal link for each person and send it by text or email. Making a new link turns off that person's old one. "Can add info" lets someone name and describe items: the Add info screen and the Edit buttons on each item. Nobody else can change item details.</p>
     <div class="admin-sections">
       <section>
         <div class="eyebrow" style="margin-bottom:8px">People</div>

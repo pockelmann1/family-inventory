@@ -55,6 +55,7 @@ export function makeApi(key, onInvalidLink = () => {}) {
     key,
     load: () => call('fi_load'),
     setRank: (item, rank) => call('fi_set_rank', { p_item: item, p_rank: rank }),
+    setTop10: (items) => call('fi_set_top10', { p_items: items }),
     editItem: (item, field, value, expected) => call('fi_edit_item', { p_item: item, p_field: field, p_value: value, p_expected: expected }),
     history: (item) => call('fi_item_history', { p_item: item }),
     adminPeople: () => call('fi_admin_people'),

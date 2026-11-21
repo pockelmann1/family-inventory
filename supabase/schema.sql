@@ -106,6 +106,18 @@ create table if not exists app.item_drafts (
   decided_at   timestamptz
 );
 
+-- Each family member's personal top 10, in order (pos 1 = wanted most).
+-- Only items the person has ranked can be in it; the person, their family and
+-- the admin can see it.
+create table if not exists app.top_picks (
+  person_id   int  not null references app.people(id) on delete cascade,
+  item_id     text not null references app.items(id) on delete cascade,
+  pos         int  not null check (pos between 1 and 10),
+  updated_at  timestamptz not null default now(),
+  primary key (person_id, pos),
+  unique (person_id, item_id)
+);
+
 -- Editors (for example Susan) get the "Add info" screen and see drafts.
 alter table app.people add column if not exists is_editor boolean not null default false;
 
@@ -128,7 +140,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
-                           'rankings','item_edits','item_drafts','import_tokens','photo_staging']
+                           'rankings','item_edits','item_drafts','top_picks','import_tokens','photo_staging']
   loop
     execute format('alter table app.%I enable row level security', t);
     execute format('alter table app.%I force row level security', t);
@@ -143,7 +155,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
-                           'rankings','item_edits','item_drafts','import_tokens','photo_staging']
+                           'rankings','item_edits','item_drafts','top_picks','import_tokens','photo_staging']
   loop
     if not exists (select 1 from pg_policies
                    where schemaname = 'app' and tablename = t and policyname = 'owner_all') then
@@ -279,12 +291,16 @@ begin
                         order by ip.sort_order)
                  from app.item_photos ip join app.photos ph on ph.id = ip.photo_id
                  where ip.item_id = i.id), '[]'::jsonb),
+               -- Family members see only their own family's ranks; Results is for the admin.
                'ranks', coalesce((
                  select jsonb_object_agg(r.person_id::text, r.rank)
-                 from app.rankings r where r.item_id = i.id), '{}'::jsonb),
-               'family_best', res.family_best,
-               'overall_best', res.overall_best,
-               'top_families', res.top_families,
+                 from app.rankings r join app.people rp on rp.id = r.person_id
+                 where r.item_id = i.id and (me.is_admin or rp.family_id = me.family_id)), '{}'::jsonb),
+               'family_best', case when me.is_admin then res.family_best
+                                   else coalesce((select jsonb_object_agg(k, v) from jsonb_each(res.family_best) as fb(k, v)
+                                                  where k = me.family_id::text), '{}'::jsonb) end,
+               'overall_best', case when me.is_admin then res.overall_best end,
+               'top_families', case when me.is_admin then res.top_families else '[]'::jsonb end,
                'draft', (select jsonb_build_object('name', d.name, 'type', d.type,
                                                    'subtype', d.subtype, 'description', d.description)
                          from app.item_drafts d
@@ -292,9 +308,59 @@ begin
              order by i.sort, i.id)
       from app.items i
       join app.item_results res on res.item_id = i.id
-      where me.is_admin or not i.hidden), '[]'::jsonb)
+      where me.is_admin or not i.hidden), '[]'::jsonb),
+    -- Top 10 lists: { person_id: [item ids in order] } for the caller's family (admin: everyone).
+    'top10', coalesce((
+      select jsonb_object_agg(t.person_id::text, t.items)
+      from (select tp.person_id, jsonb_agg(tp.item_id order by tp.pos) as items
+            from app.top_picks tp
+            join app.people pp on pp.id = tp.person_id
+            join app.items ti on ti.id = tp.item_id
+            where (me.is_admin or pp.family_id = me.family_id) and (me.is_admin or not ti.hidden)
+            group by tp.person_id) t), '{}'::jsonb)
   ) into result;
   return result;
+end $$;
+
+-- Replace a person's top 10 with the given item ids, in order.
+create or replace function app.put_top10(p_person int, p_items text[])
+returns void language plpgsql volatile security definer set search_path = '' as $$
+begin
+  delete from app.top_picks where person_id = p_person;
+  insert into app.top_picks (person_id, item_id, pos)
+  select p_person, u.item_id, u.n from unnest(p_items) with ordinality as u(item_id, n);
+end $$;
+
+-- Save the caller's whole top 10 (a JSON array of up to 10 item ids, best first).
+-- Every item must be one the caller has ranked.
+create or replace function public.fi_set_top10(p_key text, p_items jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare
+  me app.people;
+  ids text[];
+begin
+  me := app.person_for(p_key);
+  if me.family_id is null then
+    raise exception 'only family members have a top 10' using errcode = '42501';
+  end if;
+  if jsonb_typeof(p_items) is distinct from 'array' then
+    raise exception 'items must be a list' using errcode = '22023';
+  end if;
+  select coalesce(array_agg(e order by n), '{}') into ids
+  from jsonb_array_elements_text(p_items) with ordinality as x(e, n);
+  if cardinality(ids) > 10 then
+    raise exception 'a top 10 has at most 10 items' using errcode = '22023';
+  end if;
+  if cardinality(ids) <> (select count(distinct e) from unnest(ids) e) then
+    raise exception 'an item can only be in the top 10 once' using errcode = '22023';
+  end if;
+  if exists (select 1 from unnest(ids) e
+             where not exists (select 1 from app.rankings r join app.items i on i.id = r.item_id
+                               where r.person_id = me.id and r.item_id = e and not i.hidden)) then
+    raise exception 'rank an item before adding it to your top 10' using errcode = '22023';
+  end if;
+  perform app.put_top10(me.id, ids);
+  return to_jsonb(ids);
 end $$;
 
 -- Set (1..5) or clear (null) the caller's own rank on an item.
@@ -313,6 +379,11 @@ begin
   end if;
   if p_rank is null then
     delete from app.rankings where person_id = me.id and item_id = p_item;
+    -- An unranked item cannot stay in the top 10; the rest move up.
+    if exists (select 1 from app.top_picks where person_id = me.id and item_id = p_item) then
+      perform app.put_top10(me.id, (select array_agg(item_id order by pos) filter (where item_id <> p_item)
+                                    from app.top_picks where person_id = me.id));
+    end if;
   elsif p_rank between 1 and 5 then
     insert into app.rankings (person_id, item_id, rank)
     values (me.id, p_item, p_rank)
@@ -321,12 +392,15 @@ begin
     raise exception 'rank must be 1 to 5' using errcode = '22023';
   end if;
 
+  -- Same rule as fi_load: only the caller's own family's ranks come back.
   select jsonb_build_object(
            'ranks', coalesce((select jsonb_object_agg(r.person_id::text, r.rank)
-                              from app.rankings r where r.item_id = p_item), '{}'::jsonb),
-           'family_best', res2.family_best,
-           'overall_best', res2.overall_best,
-           'top_families', res2.top_families)
+                              from app.rankings r join app.people rp on rp.id = r.person_id
+                              where r.item_id = p_item and rp.family_id = me.family_id), '{}'::jsonb),
+           'family_best', coalesce((select jsonb_object_agg(k, v) from jsonb_each(res2.family_best) as fb(k, v)
+                                    where k = me.family_id::text), '{}'::jsonb),
+           'overall_best', null,
+           'top_families', '[]'::jsonb)
     into res
   from app.item_results res2 where res2.item_id = p_item;
   return res;
@@ -349,7 +423,7 @@ declare
                   regexp_replace(coalesce(p_value, ''), '[\x01-\x09\x0b-\x1f\x7f]', '', 'g'),
                   '^\s+|\s+$', '', 'g'), 4000);
 begin
-  me := app.person_for(p_key);
+  me := app.editor_for(p_key); -- only the admin and people marked "Can add info" may change item details
   if p_field not in ('name', 'type', 'subtype', 'origin', 'description') then
     raise exception 'field cannot be edited' using errcode = '22023';
   end if;

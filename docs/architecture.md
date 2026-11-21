@@ -58,16 +58,19 @@ flowchart LR
 | --- | --- | --- |
 | `#/` | Browse: the collection, filters, rank buttons | everyone |
 | `#/item/ITEM-0001` | One item: photos, ranking, details, own family's ranks, edit history | everyone |
-| `#/family` | My family: each family member's ranks | family members |
-| `#/results` | Results: best rank and most-wanted family per item, CSV download for admin | everyone |
+| `#/family` | My family: your top 10 (drag to reorder, add from a search of what you ranked), the family top 10 (worked out from everyone's lists: 10 points for 1st place down to 1 for 10th, added up) and each person's top 10 side by side, then each family member's ranks | family members |
+| `#/results` | Results: each family's family top 10 side by side and every person's list, best rank and most-wanted family per item, CSV download | admin |
 | `#/fill` | Add info: one item at a time, with photo-based suggestions | editors and admin |
 | `#/admin` | Admin: links, editors, who has started | admin |
 
-People who rank do not see other families' ranks on Browse or the item page
-(no "most wanted" line, interest filter or most-wanted sort), so they are
-not swayed by them. They see them on My family (their own family) and
-Results. The admin, who does not rank, sees everything everywhere. This is
-the `seesOthers()` check in `src/main.js`.
+Family members only ever see their own family's ranks, so nobody ranks
+against what other families chose. The database enforces this: `fi_load`
+and `fi_set_rank` return only the caller's own family's ranks, with no
+overall best or most-wanted family. Their family's ranks are on My family;
+Browse and the item page show no "most wanted" line, interest filter or
+most-wanted sort. Results (every family) is for the admin, who does not rank
+and sees everything. In `src/main.js` this is `seesOthers()` and the admin
+check on the Results tab.
 
 ## Security in one paragraph
 
