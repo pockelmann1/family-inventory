@@ -6,6 +6,7 @@ on:
   schedule:
     - cron: '17 9 * * *'
   push:
+    branches: [main]
     paths:
       - scripts/photos.mjs
       - scripts/photos-run.txt
@@ -16,6 +17,7 @@ concurrency: photos
 
 permissions:
   contents: read
+  actions: write # only to keep this scheduled job switched on (last step)
 
 env:
   SUPABASE_PROJECT_REF: joclsntnnmtzzeippxhp
@@ -26,12 +28,12 @@ jobs:
   photos:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Keep Supabase awake
         run: |
           curl -fsS -o /dev/null -X POST "$SUPABASE_URL/rest/v1/rpc/fi_ping" \
@@ -45,3 +47,12 @@ jobs:
         env:
           PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      - name: Keep this daily job switched on
+        # GitHub switches off scheduled jobs in a repository with no changes
+        # for 60 days. Re-enabling it each run keeps photo links and the
+        # keep-alive ping going even when nobody touches the code.
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/photos.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}

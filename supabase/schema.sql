@@ -10,6 +10,8 @@
 --    takes the caller's personal link key, checks it against a SHA-256 hash in
 --    app.people, and only then reads or writes.
 
+set client_min_messages = warning;
+
 create extension if not exists pgcrypto with schema extensions;
 
 create schema if not exists app;
@@ -90,6 +92,23 @@ create table if not exists app.item_edits (
 );
 
 -- One-time import support. Removed from use once the import is finished.
+-- Suggested name/type/description for an item, written from its photo and
+-- waiting for an editor to accept, fix or discard.
+create table if not exists app.item_drafts (
+  item_id      text primary key references app.items(id) on delete cascade,
+  name         text not null default '',
+  type         text not null default '',
+  subtype      text not null default '',
+  description  text not null default '',
+  status       text not null default 'open' check (status in ('open', 'used', 'dismissed')),
+  created_at   timestamptz not null default now(),
+  decided_by   int references app.people(id),
+  decided_at   timestamptz
+);
+
+-- Editors (for example Susan) get the "Add info" screen and see drafts.
+alter table app.people add column if not exists is_editor boolean not null default false;
+
 create table if not exists app.import_tokens (
   token_hash  bytea primary key,
   active      boolean not null default true,
@@ -109,7 +128,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
-                           'rankings','item_edits','import_tokens','photo_staging']
+                           'rankings','item_edits','item_drafts','import_tokens','photo_staging']
   loop
     execute format('alter table app.%I enable row level security', t);
     execute format('alter table app.%I force row level security', t);
@@ -124,7 +143,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
-                           'rankings','item_edits','import_tokens','photo_staging']
+                           'rankings','item_edits','item_drafts','import_tokens','photo_staging']
   loop
     if not exists (select 1 from pg_policies
                    where schemaname = 'app' and tablename = t and policyname = 'owner_all') then
@@ -171,7 +190,9 @@ $$;
 
 create or replace function app.new_key()
 returns text language sql volatile set search_path = '' as $$
-  select translate(rtrim(encode(extensions.gen_random_bytes(24), 'base64'), '='), '+/', '-_')
+  -- 40 hex characters (160 random bits). Letters and digits only, so text
+  -- and email apps never cut punctuation off the end of a link.
+  select encode(extensions.gen_random_bytes(20), 'hex')
 $$;
 
 create or replace function app.person_for(p_key text)
@@ -199,6 +220,17 @@ begin
   return v;
 end $$;
 
+create or replace function app.editor_for(p_key text)
+returns app.people language plpgsql stable security definer set search_path = '' as $$
+declare v app.people;
+begin
+  v := app.person_for(p_key);
+  if not (v.is_admin or v.is_editor) then
+    raise exception 'editors only' using errcode = '42501';
+  end if;
+  return v;
+end $$;
+
 create or replace function app.check_import_token(p_token text)
 returns void language plpgsql stable security definer set search_path = '' as $$
 begin
@@ -222,7 +254,8 @@ begin
 
   select jsonb_build_object(
     'me', jsonb_build_object('id', me.id, 'name', me.name, 'role', me.role,
-                             'family_id', me.family_id, 'is_admin', me.is_admin),
+                             'family_id', me.family_id, 'is_admin', me.is_admin,
+                             'is_editor', me.is_admin or me.is_editor),
     'families', coalesce((
       select jsonb_agg(jsonb_build_object(
                'id', f.id, 'name', f.name,
@@ -241,7 +274,8 @@ begin
                  select jsonb_agg(jsonb_build_object(
                           'full', ph.full_url, 'thumb', ph.thumb_url,
                           'w', ph.width, 'h', ph.height,
-                          'drive', 'https://drive.google.com/file/d/' || ph.original_drive_id || '/view')
+                          'drive', case when me.is_admin
+                                        then 'https://drive.google.com/file/d/' || ph.original_drive_id || '/view' end)
                         order by ip.sort_order)
                  from app.item_photos ip join app.photos ph on ph.id = ip.photo_id
                  where ip.item_id = i.id), '[]'::jsonb),
@@ -250,7 +284,11 @@ begin
                  from app.rankings r where r.item_id = i.id), '{}'::jsonb),
                'family_best', res.family_best,
                'overall_best', res.overall_best,
-               'top_families', res.top_families)
+               'top_families', res.top_families,
+               'draft', (select jsonb_build_object('name', d.name, 'type', d.type,
+                                                   'subtype', d.subtype, 'description', d.description)
+                         from app.item_drafts d
+                         where d.item_id = i.id and d.status = 'open' and (me.is_admin or me.is_editor)))
              order by i.sort, i.id)
       from app.items i
       join app.item_results res on res.item_id = i.id
@@ -295,12 +333,21 @@ begin
 end $$;
 
 -- Edit a descriptive field; every change is recorded in app.item_edits.
-create or replace function public.fi_edit_item(p_key text, p_item text, p_field text, p_value text)
+-- p_expected is the value the editor started from. If someone else changed
+-- the field in the meantime, nothing is saved and the current value comes
+-- back with conflict = true, so nobody silently overwrites a newer edit.
+drop function if exists public.fi_edit_item(text, text, text, text);
+create or replace function public.fi_edit_item(p_key text, p_item text, p_field text, p_value text,
+                                               p_expected text default null)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
   me app.people;
   old_v text;
-  new_v text := left(btrim(coalesce(p_value, '')), 4000);
+  last_by text;
+  -- Drop control characters (keeping line breaks), then trim all whitespace.
+  new_v text := left(regexp_replace(
+                  regexp_replace(coalesce(p_value, ''), '[\x01-\x09\x0b-\x1f\x7f]', '', 'g'),
+                  '^\s+|\s+$', '', 'g'), 4000);
 begin
   me := app.person_for(p_key);
   if p_field not in ('name', 'type', 'subtype', 'origin', 'description') then
@@ -309,10 +356,17 @@ begin
   if p_field = 'name' and new_v = '' then
     raise exception 'name cannot be empty' using errcode = '22023';
   end if;
-  if not exists (select 1 from app.items where id = p_item) then
+  if not exists (select 1 from app.items where id = p_item and (me.is_admin or not hidden)) then
     raise exception 'unknown item' using errcode = 'P0002';
   end if;
-  execute format('select %I from app.items where id = $1', p_field) into old_v using p_item;
+  execute format('select %I from app.items where id = $1 for update', p_field) into old_v using p_item;
+  if p_expected is not null and old_v is distinct from p_expected and old_v is distinct from new_v then
+    select p.name into last_by
+    from app.item_edits e join app.people p on p.id = e.person_id
+    where e.item_id = p_item and e.field = p_field
+    order by e.at desc, e.id desc limit 1;
+    return jsonb_build_object('field', p_field, 'value', old_v, 'conflict', true, 'by', last_by);
+  end if;
   if old_v is distinct from new_v then
     execute format('update app.items set %I = $1, updated_by = $2, updated_at = now() where id = $3', p_field)
       using new_v, me.id, p_item;
@@ -324,8 +378,12 @@ end $$;
 
 create or replace function public.fi_item_history(p_key text, p_item text)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare me app.people;
 begin
-  perform app.person_for(p_key);
+  me := app.person_for(p_key);
+  if not exists (select 1 from app.items where id = p_item and (me.is_admin or not hidden)) then
+    raise exception 'unknown item' using errcode = 'P0002';
+  end if;
   return coalesce((
     select jsonb_agg(jsonb_build_object(
              'id', e.id, 'field', e.field, 'old', e.old_value, 'new', e.new_value,
@@ -343,7 +401,7 @@ begin
   perform app.admin_for(p_key);
   return coalesce((
     select jsonb_agg(jsonb_build_object(
-             'id', p.id, 'name', p.name, 'role', p.role, 'is_admin', p.is_admin,
+             'id', p.id, 'name', p.name, 'role', p.role, 'is_admin', p.is_admin, 'is_editor', p.is_editor,
              'family_id', p.family_id, 'family', f.name,
              'has_link', p.link_key_hash is not null,
              'last_seen_at', p.last_seen_at,
@@ -377,16 +435,70 @@ begin
     raise exception 'you cannot turn off your own link' using errcode = '22023';
   end if;
   update app.people set link_key_hash = null where id = p_person;
+  if not found then
+    raise exception 'unknown person' using errcode = 'P0002';
+  end if;
 end $$;
 
 create or replace function public.fi_admin_set_hidden(p_key text, p_item text, p_hidden boolean)
 returns void language plpgsql volatile security definer set search_path = '' as $$
-declare me app.people;
+declare
+  me app.people;
+  was boolean;
 begin
   me := app.admin_for(p_key);
-  update app.items set hidden = p_hidden, updated_by = me.id, updated_at = now() where id = p_item;
-  insert into app.item_edits (item_id, person_id, field, old_value, new_value)
-  values (p_item, me.id, 'hidden', (not p_hidden)::text, p_hidden::text);
+  select hidden into was from app.items where id = p_item for update;
+  if not found then
+    raise exception 'unknown item' using errcode = 'P0002';
+  end if;
+  if was is distinct from p_hidden then
+    update app.items set hidden = p_hidden, updated_by = me.id, updated_at = now() where id = p_item;
+    insert into app.item_edits (item_id, person_id, field, old_value, new_value)
+    values (p_item, me.id, 'hidden', was::text, p_hidden::text);
+  end if;
+end $$;
+
+create or replace function public.fi_admin_set_editor(p_key text, p_person int, p_editor boolean)
+returns void language plpgsql volatile security definer set search_path = '' as $$
+begin
+  perform app.admin_for(p_key);
+  update app.people set is_editor = coalesce(p_editor, false) where id = p_person;
+  if not found then
+    raise exception 'unknown person' using errcode = 'P0002';
+  end if;
+end $$;
+
+-- Load suggested drafts: [{"id":"ITEM-0054","name":…,"type":…,"subtype":…,"description":…}, …].
+-- Only fills open drafts; a draft someone already used or discarded is left alone.
+create or replace function public.fi_admin_add_drafts(p_key text, p_drafts jsonb)
+returns int language plpgsql volatile security definer set search_path = '' as $$
+declare n int;
+begin
+  perform app.admin_for(p_key);
+  insert into app.item_drafts (item_id, name, type, subtype, description)
+  select d->>'id', left(btrim(coalesce(d->>'name', '')), 200), left(btrim(coalesce(d->>'type', '')), 100),
+         left(btrim(coalesce(d->>'subtype', '')), 100), left(btrim(coalesce(d->>'description', '')), 2000)
+  from jsonb_array_elements(p_drafts) d
+  where exists (select 1 from app.items i where i.id = d->>'id')
+  on conflict (item_id) do update
+    set name = excluded.name, type = excluded.type, subtype = excluded.subtype,
+        description = excluded.description, created_at = now()
+    where app.item_drafts.status = 'open';
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- An editor accepted ('used') or rejected ('dismissed') an item's draft.
+create or replace function public.fi_draft_done(p_key text, p_item text, p_status text)
+returns void language plpgsql volatile security definer set search_path = '' as $$
+declare me app.people;
+begin
+  me := app.editor_for(p_key);
+  if p_status not in ('used', 'dismissed') then
+    raise exception 'status must be used or dismissed' using errcode = '22023';
+  end if;
+  update app.item_drafts set status = p_status, decided_by = me.id, decided_at = now()
+  where item_id = p_item and status = 'open';
 end $$;
 
 -- ---------------------------------------------------------------- keep-alive

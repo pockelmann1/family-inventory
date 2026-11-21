@@ -11,5 +11,9 @@
   "devDependencies": {
     "pg": "8.13.1",
     "vite": "6.0.7"
+  },
+  "dependencies": {
+    "@fontsource/cormorant-garamond": "5.3.0",
+    "@fontsource/jost": "5.3.0"
   }
 }

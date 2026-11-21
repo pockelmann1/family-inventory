@@ -10,8 +10,11 @@
 import pg from 'pg';
 
 const BUCKET = 'photos';
-const SIGN_SECONDS = 7 * 24 * 3600; // signed URLs last a week
-const REFRESH_WITHIN = '3 days';    // re-sign anything expiring sooner than this
+// Signed URLs last 3 days and are renewed daily, so a photo link copied out
+// of the site (or kept by someone whose link was turned off) dies quickly,
+// while one missed daily run still leaves a day of slack.
+const SIGN_SECONDS = 3 * 24 * 3600;
+const REFRESH_WITHIN = '50 hours'; // re-sign anything expiring sooner than this
 
 const base = process.env.SUPABASE_URL.replace(/\/$/, '');
 const key = process.env.SUPABASE_SECRET_KEY;
