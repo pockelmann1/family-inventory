@@ -59,7 +59,10 @@ flowchart LR
 | `#/` | Browse: the collection, filters, rank buttons | everyone |
 | `#/item/ITEM-0001` | One item: photos, ranking, details, own family's ranks, edit history | everyone |
 | `#/family` | My family: your top 10 (drag to reorder, add from a search of what you ranked), the family top 10 (worked out from everyone's lists: 10 points for 1st place down to 1 for 10th, added up) and each person's top 10 side by side, then each family member's ranks | family members |
+<<<<<<< HEAD
 | `#/assign` | Assign: close ranking, give each item to a family, push to families, push updates | admin |
+=======
+>>>>>>> 7d685bfad55d8c4596264209e55efc3a56828686
 | `#/results` | Results: each family's family top 10 side by side and every person's list, best rank and most-wanted family per item, CSV download | admin |
 | `#/fill` | Add info: one item at a time, with photo-based suggestions | editors and admin |
 | `#/admin` | Admin: links, editors, who has started | admin |
@@ -72,6 +75,7 @@ Browse and the item page show no "most wanted" line, interest filter or
 most-wanted sort. Results (every family) is for the admin, who does not rank
 and sees everything. In `src/main.js` this is `seesOthers()` and the admin
 check on the Results tab.
+<<<<<<< HEAD
 
 ## Ranking, assigning and pushing
 
@@ -86,6 +90,8 @@ check on the Results tab.
    family. After the push every item shows where it went (Browse, item page,
    My family), and ranking can't reopen. Later changes are marked on their rows
    and stay a draft until "Push update" (or "Discard").
+=======
+>>>>>>> 7d685bfad55d8c4596264209e55efc3a56828686
 
 ## Security in one paragraph
 
