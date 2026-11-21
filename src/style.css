@@ -88,7 +88,7 @@ h1.page-title {
 .toolbar .row > [data-f='view'] { grid-column: 1 / -1; }
 @media (min-width: 700px) { .toolbar .row { display: flex; flex-wrap: wrap; align-items: center; } }
 @media (min-width: 900px) {
-  .toolbar { grid-template-columns: minmax(260px, 1fr) auto; align-items: center; }
+  .toolbar { grid-template-columns: minmax(260px, 1fr) auto; align-items: start; }
 }
 .input, .select {
   border: 1px solid #d4d4d4; background: #fff; border-radius: 0; height: var(--tap); padding: 0 12px;
