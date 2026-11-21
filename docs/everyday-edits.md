@@ -6,6 +6,9 @@ project → SQL Editor → New query → paste → Run). Nothing here touches Gi
 
 ## Fix or add an item's details (website)
 
+Only the admin and people marked **Can add info** can do this; everyone else
+sees the details without Edit buttons.
+
 - **One item:** open it and tap **Edit** next to Name, Type, Subtype, Origin or
   Description. Type is a pick list; choose **Add a new type…** to create one.
   Subtype is a pick list of the subtypes already used with that type, plus

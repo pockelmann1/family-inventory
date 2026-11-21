@@ -561,7 +561,7 @@ function renderItem(id) {
       <div class="fact" data-field="${f}">
         <dt>${label}</dt>
         <dd class="${item[f] ? '' : 'empty'}">${item[f] ? esc(item[f]) : 'Not filled in'}</dd>
-        <button type="button" class="link-btn" data-edit="${f}">Edit</button>
+        ${state.me.is_editor ? `<button type="button" class="link-btn" data-edit="${f}">Edit</button>` : '<span></span>'}
       </div>`).join('');
   };
   drawFacts();
@@ -1000,7 +1000,7 @@ async function renderAdmin() {
   if (!state.me.is_admin) { location.hash = '#/'; return; }
   shell('admin', `
     <h1 class="page-title">Admin</h1>
-    <p class="page-sub">Make a personal link for each person and send it by text or email. Making a new link turns off that person's old one. "Can add info" gives someone the Add info screen for naming and describing items.</p>
+    <p class="page-sub">Make a personal link for each person and send it by text or email. Making a new link turns off that person's old one. "Can add info" lets someone name and describe items: the Add info screen and the Edit buttons on each item. Nobody else can change item details.</p>
     <div class="admin-sections">
       <section>
         <div class="eyebrow" style="margin-bottom:8px">People</div>

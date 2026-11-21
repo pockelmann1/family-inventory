@@ -27,8 +27,10 @@
   place the key is ever shown.
 - **Turn off.** That person's link stops working at once; an open tab signs
   out on its next action.
-- **Can add info.** Gives that person the Add info screen and lets them see
-  and accept suggestions. The admin always has it.
+- **Can add info.** Gives that person the Add info screen, the Edit buttons on
+  each item, and the photo suggestions. Only people with it (and the admin) can
+  change an item's name, type, subtype, origin or description; the database
+  refuses edits from anyone else. The admin always has it.
 - The summary line shows how many family members have a link, have opened it
   and have started ranking.
 

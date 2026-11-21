@@ -349,7 +349,7 @@ declare
                   regexp_replace(coalesce(p_value, ''), '[\x01-\x09\x0b-\x1f\x7f]', '', 'g'),
                   '^\s+|\s+$', '', 'g'), 4000);
 begin
-  me := app.person_for(p_key);
+  me := app.editor_for(p_key); -- only the admin and people marked "Can add info" may change item details
   if p_field not in ('name', 'type', 'subtype', 'origin', 'description') then
     raise exception 'field cannot be edited' using errcode = '22023';
   end if;

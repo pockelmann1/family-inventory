@@ -32,7 +32,7 @@ anything. "Who" says which check it runs.
 | --- | --- | --- |
 | `fi_load(key)` | anyone with a link | Everything for the screens. Hidden items only for admin; Drive links only for admin; drafts only for editors and admin. Updates `last_seen_at`. |
 | `fi_set_rank(key, item, rank)` | family members | Sets 1 to 5, or clears with `null`. Returns the item's new ranks and results. |
-| `fi_edit_item(key, item, field, value, expected)` | anyone with a link | Edits name, type, subtype, origin or description, and logs it. If `expected` no longer matches (someone else saved first) it saves nothing and returns `conflict: true` with the current value. |
+| `fi_edit_item(key, item, field, value, expected)` | editors and admin | Edits name, type, subtype, origin or description, and logs it. If `expected` no longer matches (someone else saved first) it saves nothing and returns `conflict: true` with the current value. |
 | `fi_item_history(key, item)` | anyone with a link | Edit history, newest first. |
 | `fi_draft_done(key, item, status)` | editors, admin | Marks a suggestion `used` or `dismissed`. |
 | `fi_admin_people(key)` | admin | Everyone, with link status and rank counts. |
