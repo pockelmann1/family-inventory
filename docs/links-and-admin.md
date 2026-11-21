@@ -40,6 +40,20 @@ If someone says the site shows "Welcome", first ask them to tap the link in
 the newest message again. A new link signs them out on every other device, so
 only make one if the old link is lost or was shared.
 
+## Assigning items (`#/assign`, admin link only)
+
+- **Close ranking** first (tap twice). Families can no longer change ranks or
+  top 10s. "Reopen ranking" is there until the first push.
+- Each row shows every family's best rank and a "Why" line: who ranked it best,
+  ties, and where it sits in each family top 10. Tap a family to give it the
+  item; tap it again to take that back. "Confirm" accepts the suggestion.
+- Filters: Needs a decision, Ties, Wanted by 2+ families, In someone's top 10,
+  Nobody ranked, Confirmed, and (after a push) Changed since push.
+- **Push to families** unlocks when every item has a family. After that, any
+  change shows "N changes not yet pushed" with Show changes, Discard and
+  **Push update**. Families only ever see the last push.
+- Results' CSV download includes the draft family and the pushed family.
+
 ## Hiding an item
 
 Open the item and use **Hide this item** in the Admin section. Hidden items

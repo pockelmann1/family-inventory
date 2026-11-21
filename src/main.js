@@ -138,6 +138,7 @@ function ingest(data) {
   state.items = data.items;
   state.byId = new Map(data.items.map((i) => [i.id, i]));
   state.top10 = data.top10 || {};
+  state.stage = data.stage || null;
   state.people = new Map();
   for (const f of data.families) for (const m of f.members) state.people.set(String(m.id), { ...m, family_id: f.id });
   state.loadedAt = Date.now();
@@ -224,8 +225,8 @@ function bestLine(item) {
 function shell(active, content) {
   const tabs = [
     ['browse', '#/', 'Browse'],
-    ['family', '#/family', 'My family'],
-    ...(state.me.is_admin ? [['results', '#/results', 'Results']] : []),
+    ...(canRank() ? [['family', '#/family', 'My family']] : []),
+    ...(state.me.is_admin ? [['results', '#/results', 'Results'], ['assign', '#/assign', 'Assign']] : []),
   ];
   if (state.me.is_editor) tabs.push(['fill', '#/fill', 'Add info']);
   if (state.me.is_admin) tabs.push(['admin', '#/admin', 'Admin']);
@@ -251,6 +252,14 @@ function shell(active, content) {
 function rankerHtml(item, large = false) {
   if (!canRank()) return '';
   const mine = myRank(item);
+  if (!rankingOpen()) { // ranking is closed: show the rank, but it can't change
+    return `
+    <div class="ranker locked${large ? ' large' : ''}" data-item="${esc(item.id)}" role="group" aria-label="Your rank for ${esc(item.name)} (ranking is closed)">
+      ${large ? '<span class="label">My rank <span class="hint">ranking is closed</span></span>' : ''}
+      ${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-rank="${n}" aria-pressed="${mine === n}" aria-label="Rank ${n}" disabled>${n}</button>`).join('')}
+      <span class="lockline">${mine != null ? `Your rank: ${mine}` : 'Not ranked'}</span>
+    </div>`;
+  }
   return `
     <div class="ranker${large ? ' large' : ''}" data-item="${esc(item.id)}" role="group" aria-label="My rank for ${esc(item.name)}">
       ${large ? '<span class="label">My rank <span class="hint">1 = want most</span></span>' : ''}
@@ -315,7 +324,7 @@ let savesInFlight = 0;
 
 const FILTERS = 'fi_browse';
 function loadFilters() {
-  const blank = { q: '', room: '', type: '', mine: 'all', interest: 'all', sort: 'catalog' };
+  const blank = { q: '', room: '', type: '', mine: 'all', interest: 'all', sort: 'catalog', went: '' };
   try { return { ...blank, ...JSON.parse(getStored(FILTERS, 'sessionStorage') || '{}') }; }
   catch { return blank; }
 }
@@ -327,6 +336,9 @@ function filteredItems(f) {
     if (f.type && i.type !== f.type) return false;
     if (f.mine === 'unranked' && myRank(i) != null) return false;
     if (f.mine === 'ranked' && myRank(i) == null) return false;
+    if (f.went && isPushed()) {
+      if (f.went === 'mine' ? !wentMine(i) : f.went === 'other' ? (wentMine(i) || i.went_to == null) : i.went_to !== Number(f.went)) return false;
+    }
     if (seesOthers()) { // people who rank don't get the interest filter (see seesOthers)
       const fams = Object.keys(i.family_best).length;
       if (f.interest === 'none' && fams > 0) return false;
@@ -385,9 +397,10 @@ function renderBrowse() {
   const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
   shell('browse', `
     <h1 class="page-title">The Collection</h1>
-    <p class="page-sub">${canRank() ? 'Tap 1 to 5 under anything you would like. 1 means you want it most, 5 means a little.' : 'Browse everything in the house and see who is interested.'}</p>
-    ${welcomeCard()}
-    ${canRank() ? progressBar() : ''}
+    <p class="page-sub">${canRank() && rankingOpen() ? 'Tap 1 to 5 under anything you would like. 1 means you want it most, 5 means a little.' : 'Browse everything in the house.'}</p>
+    ${stageNotice()}
+    ${rankingOpen() ? welcomeCard() : ''}
+    ${canRank() && rankingOpen() ? progressBar() : ''}
     <div class="toolbar">
       <input class="input search" type="search" placeholder="Search by name, room or ID" value="${esc(f.q)}" data-f="q" aria-label="Search" />
       <div class="row">
@@ -395,6 +408,7 @@ function renderBrowse() {
         ${types().length ? `<select class="select" data-f="type" aria-label="Type">${opt('', 'All types', f.type)}${types().map((t) => opt(t, t, f.type)).join('')}</select>` : ''}
         ${canRank() ? `<select class="select" data-f="mine" aria-label="My ranks">${opt('all', 'Everything', f.mine)}${opt('unranked', 'Not yet ranked by me', f.mine)}${opt('ranked', 'Ranked by me', f.mine)}</select>` : ''}
         ${seesOthers() ? `<select class="select" data-f="interest" aria-label="Interest">${opt('all', 'Any interest', f.interest)}${opt('none', 'Nobody has ranked it', f.interest)}${opt('some', 'Someone wants it', f.interest)}${opt('multi', 'Wanted by 2+ families', f.interest)}</select>` : ''}
+        ${isPushed() ? `<select class="select" data-f="went" aria-label="Went to">${opt('', 'Went to: any family', f.went)}${canRank() ? opt('mine', 'Went to my family', f.went) + opt('other', 'Went to another family', f.went) : ''}${state.families.map((fm) => opt(String(fm.id), `Went to ${fm.name}'s`, f.went)).join('')}</select>` : ''}
         <select class="select" data-f="sort" aria-label="Sort">${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}${seesOthers() ? opt('wanted', 'Sort: most wanted', f.sort) : ''}${canRank() ? opt('mine', 'Sort: my ranks first', f.sort) : ''}</select>
       </div>
     </div>
@@ -414,6 +428,7 @@ function renderBrowse() {
             <a class="name" href="#/item/${esc(i.id)}">${esc(i.name)}</a>
             <div class="id">${esc(i.id)}</div>
             <div class="best" data-best="${esc(i.id)}">${bestLine(i)}</div>
+            ${isPushed() && i.went_to != null ? `<div class="went">${wentTag(i)}</div>` : ''}
             ${rankerHtml(i)}
           </div>
         </article>`).join('')
@@ -510,6 +525,7 @@ function renderItem(id) {
       <div>
         <div class="eyebrow">${esc(item.room)}${item.photo_no ? ` · Photo ${esc(item.photo_no)}` : ''} · ${esc(item.id)}</div>
         <h1 class="item-title" id="title">${esc(item.name)}</h1>
+        ${wentLineHtml(item)}
         <div class="best" data-best="${esc(item.id)}">${bestLine(item)}</div>
         ${canRank() ? `<div class="top-line" id="top-line" data-item="${esc(item.id)}">${topLineHtml(item)}</div>` : ''}
         ${canRank() ? `<div class="rank-box">${rankerHtml(item, true)}</div>` : ''}
@@ -741,16 +757,18 @@ function renderFamily() {
     shell('family', `<h1 class="page-title">My family</h1><p class="page-sub">You are not part of a sibling family, so there is nothing to show here. See Results for everyone.</p>`);
     return;
   }
-  const f = loadView('fi_family', { q: '', room: '', type: '', who: 'any', sort: 'best' });
+  const f = loadView('fi_family', { q: '', room: '', type: '', who: 'any', sort: 'best', went: '' });
   shell('family', `
     <h1 class="page-title">${esc(fam.name)}'s family</h1>
-    <p class="page-sub">Your top 10, your family's top 10s, and everything your family has ranked.</p>
+    <p class="page-sub">${isPushed() ? 'What your family received, your top 10s, and everything your family ranked.' : 'Your top 10, your family\'s top 10s, and everything your family has ranked.'}</p>
+    ${stageNotice()}
     ${canRank() ? myTopHtml() : ''}
     ${(() => { const t = familyTopsHtml(fam); return t ? `<section class="family-tops"><div class="top10-head"><h2 class="section-title">Your family's top 10s</h2><p class="top10-note">The family top 10 adds up everyone's lists: 1st place is worth 10 points, 10th is worth 1.</p></div>${t}</section>` : ''; })()}
     <h2 class="section-title">Everything your family ranked</h2>
-    <p class="table-note">The family best is the lowest number any of you gave.</p>
+    <p class="table-note">The family best is the lowest number any of you gave.${isPushed() ? ' Went to shows which family each item was given to.' : ''}</p>
     ${tableToolbar(f, (opt) => `
       <select class="select" data-f="who" aria-label="Show">${opt('any', 'Ranked by anyone in the family', f.who)}${opt('me', 'Ranked by me', f.who)}${fam.members.filter((m) => m.id !== state.me.id).map((m) => opt(String(m.id), `Ranked by ${m.name}`, f.who)).join('')}${opt('notme', 'Family ranked, I have not', f.who)}${opt('all', 'All items', f.who)}</select>
+      ${isPushed() ? `<select class="select" data-f="went" aria-label="Went to">${opt('', 'Went to: any family', f.went)}${opt('mine', 'Went to my family', f.went)}${opt('other', 'Went to another family', f.went)}</select>` : ''}
       <select class="select" data-f="sort" aria-label="Sort">${opt('best', 'Sort: family best', f.sort)}${opt('mine', 'Sort: my rank', f.sort)}${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}</select>`)}
     <p class="count" id="count"></p>
     <div class="table-wrap"><table class="data" id="tbl"></table></div>`);
@@ -763,6 +781,8 @@ function renderFamily() {
       if (f.room && i.room !== f.room) return false;
       if (f.type && i.type !== f.type) return false;
       if (!matchesQuery(i, q)) return false;
+      if (isPushed() && f.went === 'mine' && !wentMine(i)) return false;
+      if (isPushed() && f.went === 'other' && (wentMine(i) || i.went_to == null)) return false;
       if (f.who === 'any') return famRanked(i);
       if (f.who === 'me') return myRank(i) != null;
       if (f.who === 'notme') return famRanked(i) && myRank(i) == null;
@@ -773,11 +793,14 @@ function renderFamily() {
     if (f.sort === 'best') rows = [...rows].sort((a, b) => best(a) - best(b));
     else if (f.sort === 'mine') rows = [...rows].sort((a, b) => (myRank(a) ?? 9) - (myRank(b) ?? 9));
     else rows = [...rows].sort(SORTS[f.sort] || SORTS.catalog);
-    document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
+    const got = isPushed() ? rows.filter(wentMine).length : 0;
+    document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}${isPushed() ? ` · ${got} went to your family` : ''}`;
+    const wentTh = isPushed() ? '<th class="went">Went to</th>' : '';
+    const wentTd = (i) => (isPushed() ? `<td class="went">${wentTag(i) || '<span class="wtag none">–</span>'}</td>` : '');
     document.getElementById('tbl').innerHTML = `
-      <thead><tr><th>Item</th><th class="num key">Family best</th>${fam.members.map((m) => `<th class="num ${m.id === state.me.id ? 'me-col' : ''}">${m.id === state.me.id ? 'You' : esc(m.name)}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td><td class="num key">${rankCell(i.family_best[String(fam.id)])}</td>${fam.members.map((m) => `<td class="num ${m.id === state.me.id ? 'me-col' : ''}">${rankCell(i.ranks[String(m.id)])}</td>`).join('')}</tr>`).join('')
-        || `<tr><td colspan="${fam.members.length + 2}" class="empty-state">Nothing matches. Try another filter.</td></tr>`}</tbody>`;
+      <thead><tr><th>Item</th>${wentTh}<th class="num key">Family best</th>${fam.members.map((m) => `<th class="num ${m.id === state.me.id ? 'me-col' : ''}">${m.id === state.me.id ? 'You' : esc(m.name)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td>${wentTd(i)}<td class="num key">${rankCell(i.family_best[String(fam.id)])}</td>${fam.members.map((m) => `<td class="num ${m.id === state.me.id ? 'me-col' : ''}">${rankCell(i.ranks[String(m.id)])}</td>`).join('')}</tr>`).join('')
+        || `<tr><td colspan="${fam.members.length + (isPushed() ? 3 : 2)}" class="empty-state">Nothing matches. Try another filter.</td></tr>`}</tbody>`;
   };
   draw();
   wireToolbar(f, 'fi_family', draw);
@@ -821,7 +844,7 @@ function myTopHtml() {
     <section class="top10" aria-labelledby="top10-h">
       <div class="top10-head">
         <h2 class="section-title" id="top10-h">Your top 10</h2>
-        <p class="top10-note">Your family and the admin can see this. Drag <span aria-hidden="true">⠿</span> to reorder.</p>
+        <p class="top10-note" id="top10-note">${topNote()}</p>
       </div>
       <ol class="slots" id="my-slots"></ol>
       <div class="picker" id="top-picker" hidden>
@@ -834,14 +857,39 @@ function myTopHtml() {
     </section>`;
 }
 
+function topNote() {
+  if (isPushed()) {
+    const items = topItems(myTop());
+    return `Your family got <b>${items.filter(wentMine).length} of your top ${items.length || 10}</b>.`;
+  }
+  if (!rankingOpen()) return 'Ranking is closed, so your top 10 is locked.';
+  return 'Your family and the admin can see this. Drag <span aria-hidden="true">⠿</span> to reorder.';
+}
+
 function drawMyTop() {
   const box = document.getElementById('my-slots');
   if (!box) return;
   const items = topItems(myTop());
+  const locked = !rankingOpen();
+  box.classList.toggle('locked', locked);
   const rows = [];
   for (let n = 1; n <= TOP_N; n++) {
     const i = items[n - 1];
-    if (i) {
+    if (i && locked) {
+      rows.push(`
+        <li class="slot filled${goneClass(i)}" data-id="${esc(i.id)}">
+          <span class="n">${n}</span>
+          <a class="slot-item" href="#/item/${esc(i.id)}">${topThumb(i)}
+            <span><span class="t">${esc(i.name)}</span><span class="s">Your rank ${myRank(i) ?? '–'} · ${esc(i.room)}</span></span></a>
+          ${gotTag(i)}
+        </li>`);
+    } else if (!i && locked) {
+      rows.push(`
+        <li class="slot empty">
+          <span class="n">${n}</span>
+          <span class="slot-item"><span class="ph"></span><span class="s">Empty</span></span>
+        </li>`);
+    } else if (i) {
       rows.push(`
         <li class="slot filled" data-id="${esc(i.id)}">
           <button type="button" class="handle" aria-label="Drag ${esc(i.name)} to a new place" title="Drag to reorder"><span aria-hidden="true">⠿</span></button>
@@ -1005,16 +1053,18 @@ function topStripHtml(person, ids, sharedSet) {
   for (let k = 0; k < TOP_N; k++) {
     const i = items[k];
     places.push(i ? `
-        <li><a href="#/item/${esc(i.id)}">
+        <li class="${goneClass(i).trim()}"><a href="#/item/${esc(i.id)}">
           <span class="ph-box">${topThumb(i)}<span class="badge">${k + 1}</span></span>
-          <span class="t">${esc(i.name)}</span>
+          <span class="txt"><span class="t">${esc(i.name)}</span>${gotTag(i)}</span>
           ${sharedSet && sharedSet.has(i.id) ? '<span class="shared">Shared pick</span>' : ''}
         </a></li>` : `
         <li class="none"><span class="ph-box"><span class="ph"></span><span class="badge">${k + 1}</span></span><span class="t">Not picked</span></li>`);
   }
   return `
     <div class="strip-wrap${isMe ? ' me' : ''}${items.length ? '' : ' blank'}">
-      <h3 class="strip-title">${isMe ? 'You' : esc(person.name)} <span class="s">${items.length === TOP_N ? '' : items.length ? `${items.length} of 10 picked` : 'Nothing picked yet'}</span></h3>
+      <h3 class="strip-title">${isMe ? 'You' : esc(person.name)} <span class="s">${isPushed() && canRank() && items.length
+        ? `got <b>${items.filter(wentMine).length}</b> of ${items.length}`
+        : items.length === TOP_N ? '' : items.length ? `${items.length} of 10 picked` : 'Nothing picked yet'}</span></h3>
       <ol class="strip">${places.join('')}</ol>
     </div>`;
 }
@@ -1029,7 +1079,7 @@ function sharedPicks(people) {
 // The family top 10, worked out from everyone's lists: 1st place is worth 10 points,
 // 10th is worth 1, and points add up across the family. Ties go to the item someone
 // placed higher, then to the item more people picked, then to catalog order.
-function familyTop(fam) {
+function familyTop(fam, limit = TOP_N) {
   const score = new Map();
   for (const m of fam.members) {
     (state.top10[String(m.id)] || []).forEach((id, k) => {
@@ -1042,7 +1092,14 @@ function familyTop(fam) {
   const order = (id) => state.items.indexOf(state.byId.get(id));
   return [...score.values()]
     .sort((a, b) => b.pts - a.pts || a.best - b.best || b.who.length - a.who.length || order(a.id) - order(b.id))
-    .slice(0, TOP_N);
+    .slice(0, limit);
+}
+
+// After the push, the family column says where each item went, on the same line as who picked it.
+function famGot(i) {
+  if (!isPushed() || i.went_to == null) return '';
+  if (canRank() && wentMine(i)) return ' · <b class="got-mine">✓ Yours</b>';
+  return ` · Went to ${esc(famShort(i.went_to))}`;
 }
 
 function familyStripHtml(fam, title = 'Family top 10') {
@@ -1052,9 +1109,9 @@ function familyStripHtml(fam, title = 'Family top 10') {
     const e = top[k]; const i = e && state.byId.get(e.id);
     const who = e && e.who.map((w) => `${w.person.id === state.me?.id ? 'You' : esc(w.person.name)} ${w.place}`).join(' · ');
     places.push(i ? `
-        <li><a href="#/item/${esc(i.id)}">
+        <li class="${goneClass(i).trim()}"><a href="#/item/${esc(i.id)}">
           <span class="ph-box">${topThumb(i)}<span class="badge">${k + 1}</span></span>
-          <span class="txt"><span class="t">${esc(i.name)}</span><span class="who">${who}</span></span>
+          <span class="txt"><span class="t">${esc(i.name)}</span><span class="who">${who}${famGot(i)}</span></span>
         </a></li>` : `
         <li class="none"><span class="ph-box"><span class="ph"></span><span class="badge">${k + 1}</span></span><span class="t">Not enough picks yet</span></li>`);
   }
@@ -1077,6 +1134,7 @@ function topLineHtml(item) {
   if (!canRank()) return '';
   const ids = myTop();
   const at = ids.indexOf(item.id);
+  if (!rankingOpen()) return at >= 0 ? `<span class="badge-sq">${at + 1}</span> In your top 10` : '';
   if (at >= 0) return `<span class="badge-sq">${at + 1}</span> In your top 10 · <button type="button" class="link-btn" data-top-remove>Remove</button>`;
   if (myRank(item) == null) return '<span class="muted">Rank it to add it to your top 10.</span>';
   if (ids.length >= TOP_N) return '<span class="muted">Your top 10 is full.</span> <a href="#/family">Change it on My family</a>';
@@ -1100,6 +1158,379 @@ document.addEventListener('click', (e) => {
     saveTop(ids.filter((x) => x !== id), 'Taken out of your top 10');
   }
 });
+
+// ------------------------------------------------------------------ assignment
+//
+// Ranking open -> ranking closed (the admin drafts who gets what) -> pushed to families.
+// item.went_to is what families see (set by a push); item.assigned is the admin's
+// working copy, which can run ahead of the last push until "Push update".
+
+const stageNow = () => state.stage || { ranking_open: true, pushed_at: null };
+const rankingOpen = () => stageNow().ranking_open !== false;
+const isPushed = () => !!stageNow().pushed_at;
+const famShort = (id) => `${familyName(id)}'s`;
+const wentMine = (i) => i.went_to != null && i.went_to === state.me.family_id;
+
+// Small "Your family" / "Sheri's" tag for tables and cards.
+function wentTag(i) {
+  if (!isPushed() || i.went_to == null) return '';
+  return wentMine(i) ? '<span class="wtag mine">Your family</span>' : `<span class="wtag other">${esc(famShort(i.went_to))}</span>`;
+}
+// "✓ Yours" / "Went to Daniel's" on top 10 places.
+function gotTag(i) {
+  if (!isPushed() || i.went_to == null || !canRank()) return '';
+  return wentMine(i) ? '<span class="wt yours">Yours</span>' : `<span class="wt other">Went to ${esc(famShort(i.went_to))}</span>`;
+}
+const goneClass = (i) => (isPushed() && canRank() && i.went_to != null && !wentMine(i) ? ' gone' : '');
+
+// Notice at the top of Browse and My family for people who rank.
+function stageNotice() {
+  if (!canRank()) return '';
+  if (isPushed()) {
+    const n = state.items.filter(wentMine).length;
+    return `
+      <section class="out-banner" id="out-banner">
+        <div><h2>Assignments are out.</h2><p>Your family received <b>${n} item${n === 1 ? '' : 's'}</b>. Every item now shows where it went.</p></div>
+        <button type="button" class="btn ghost" data-received>See what your family received</button>
+      </section>`;
+  }
+  if (!rankingOpen()) {
+    return `
+      <section class="closed-note">
+        <h2>Ranking is closed</h2>
+        <p>The admin is working out who gets what. Your ranks and top 10 are kept as they are. Once assignments go out, every item will show which family it went to.</p>
+      </section>`;
+  }
+  return '';
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('[data-received]')) return;
+  const v = loadView('fi_family', {});
+  setStored('fi_family', JSON.stringify({ ...v, who: 'all', went: 'mine' }), 'sessionStorage');
+  if (currentRoute().name === 'family') {
+    renderFamily();
+    document.getElementById('tbl')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else {
+    location.hash = '#/family';
+  }
+});
+
+// Item page: where it went (everyone), plus the admin's unpushed draft.
+function wentLineHtml(item) {
+  const parts = [];
+  if (isPushed() && item.went_to != null) {
+    parts.push(wentMine(item)
+      ? '<span class="wtag mine">Your family</span> This went to your family.'
+      : `Went to <b>${esc(familyName(item.went_to))}'s family</b>`);
+  }
+  if (state.me.is_admin && item.assigned != null && item.assigned !== item.went_to) {
+    parts.push(`<span class="draft-tag">Draft: ${esc(famShort(item.assigned))}, not pushed yet</span>`);
+  }
+  if (state.me.is_admin && item.assigned == null && !rankingOpen() && !item.hidden) parts.push('<span class="draft-tag">No family yet</span>');
+  return parts.length ? `<p class="went-line">${parts.join(' ')}</p>` : '';
+}
+
+// ---- admin: the Assign screen
+
+const ASSIGN_VIEW = 'fi_assign';
+
+// The family (or tied families) with the best rank for an item.
+function suggestion(i) {
+  const fb = i.family_best || {};
+  const vals = Object.values(fb);
+  if (!vals.length) return { best: null, fams: [] };
+  const best = Math.min(...vals);
+  return { best, fams: state.families.filter((f) => fb[String(f.id)] === best).map((f) => f.id) };
+}
+const suggested = (i) => { const s = suggestion(i); return s.fams.length === 1 ? s.fams[0] : null; };
+const isTie = (i) => suggestion(i).fams.length > 1;
+const changedSincePush = (i) => isPushed() && i.assigned !== (i.went_to ?? null);
+
+// family id -> Map(item id -> { place, who }) over each family's full combined list.
+function familyPlaces() {
+  const out = new Map();
+  for (const f of state.families) {
+    const m = new Map();
+    familyTop(f, Infinity).forEach((e, k) => m.set(e.id, { place: k + 1, who: e.who }));
+    out.set(f.id, m);
+  }
+  return out;
+}
+
+function whyHtml(i, places) {
+  const s = suggestion(i);
+  const lines = [];
+  if (changedSincePush(i)) lines.push(`<span class="chg">${i.went_to == null ? 'New' : `Changed · was ${esc(famShort(i.went_to))}`}</span>`);
+  if (!s.fams.length) lines.push('<span class="none">No one has given a preference</span>');
+  else if (s.fams.length === 1) {
+    lines.push(`<span>Best: <b>${esc(famShort(s.fams[0]))}</b> (${s.best})${i.assigned != null && i.assigned !== s.fams[0] ? ` · you chose ${esc(famShort(i.assigned))}` : ''}</span>`);
+  } else {
+    const names = s.fams.map(famShort);
+    const list = names.length === 2 ? names.join(' & ') : `${names.slice(0, -1).join(', ')} & ${names[names.length - 1]}`;
+    lines.push(`<span class="tie"><b>${i.assigned != null ? 'Was a tie' : 'Tie'}:</b> ${esc(list)} (${names.length === 2 ? 'both' : 'all'} ${s.best})</span>`);
+  }
+  const t10 = [];
+  const others = [];
+  for (const f of state.families) {
+    const p = places.get(f.id)?.get(i.id);
+    if (!p) continue;
+    const who = p.who.map((w) => `${esc(w.person.name)} ${w.place}`).join(', ');
+    if (p.place <= TOP_N) t10.push(`${esc(famShort(f.id))} #${p.place} <span class="whois">(${who})</span>`);
+    else others.push(`${esc(famShort(f.id))}: ${who}`);
+  }
+  if (t10.length) lines.push(`<span class="t10">Family top 10: ${t10.join(' · ')}</span>`);
+  if (others.length) lines.push(`<span>On personal lists: ${others.join(' · ')}</span>`);
+  if (!t10.length && !others.length && s.fams.length) lines.push('<span>Not in anyone\'s top 10</span>');
+  return lines.join('');
+}
+
+function famButtons(i) {
+  const s = suggestion(i);
+  const locked = rankingOpen();
+  return `<span class="pick">${state.families.map((f) => {
+    let cls = 'fb';
+    if (i.assigned === f.id) cls += ' on';
+    else if (i.assigned == null && s.fams.length === 1 && s.fams[0] === f.id) cls += ' sugg';
+    else if (i.assigned == null && s.fams.length > 1 && s.fams.includes(f.id)) cls += ' tied';
+    return `<button type="button" class="${cls}" data-assign="${f.id}" aria-pressed="${i.assigned === f.id}" ${locked ? 'disabled' : ''}
+      aria-label="${esc(i.name)} goes to ${esc(famShort(f.id))} family">${esc(famShort(f.id))}</button>`;
+  }).join('')}</span>`;
+}
+
+function statusHtml(i, phone) {
+  if (rankingOpen()) return '<span class="st">Close ranking to assign</span>';
+  if (i.assigned != null) return changedSincePush(i) ? '<span class="st draft">Not pushed</span>' : '<span class="st">Confirmed</span>';
+  const sg = suggested(i);
+  if (sg != null) return `<button type="button" class="btn ${phone ? '' : 'ghost '}small" data-confirm="${sg}">Confirm${phone ? ` ${esc(famShort(sg))}` : ''}</button>`;
+  return '<span class="st ask">Pick a family</span>';
+}
+
+function assignRowHtml(i, places, phone) {
+  const changed = changedSincePush(i) ? ' changed' : '';
+  if (phone) {
+    return `
+      <div class="acard${changed}" data-row="${esc(i.id)}">
+        <a class="top" href="#/item/${esc(i.id)}">${photoOf(i)?.thumb ? `<img src="${esc(photoOf(i).thumb)}" alt="" loading="lazy" />` : '<span class="ph"></span>'}
+          <span><span class="t">${esc(i.name)}</span><br><span class="s">${esc(i.room)} · ${esc(i.id)}</span></span></a>
+        <div class="ranks">${state.families.map((f) => `<div><span class="f">${esc(f.name)}</span>${rankCell(i.family_best[String(f.id)]) || '<span class="dash">–</span>'}</div>`).join('')}</div>
+        <div class="why">${whyHtml(i, places)}</div>
+        ${famButtons(i)}
+        <div class="foot">${statusHtml(i, true)}</div>
+      </div>`;
+  }
+  return `
+    <tr class="${changed.trim()}" data-row="${esc(i.id)}">
+      <td class="item-cell">${miniItem(i)}</td>
+      ${state.families.map((f) => `<td class="num">${rankCell(i.family_best[String(f.id)]) || '<span class="dash">–</span>'}</td>`).join('')}
+      <td class="why">${whyHtml(i, places)}</td>
+      <td class="goes">${famButtons(i)}<span class="act">${statusHtml(i, false)}</span></td>
+    </tr>`;
+}
+
+const ASSIGN_CHIPS = [
+  ['all', 'All', () => true],
+  ['needs', 'Needs a decision', (i) => i.assigned == null],
+  ['ties', 'Ties', (i) => isTie(i)],
+  ['multi', 'Wanted by 2+ families', (i) => Object.keys(i.family_best).length > 1],
+  ['top', 'In someone\'s top 10', (i, places) => state.families.some((f) => places.get(f.id)?.has(i.id))],
+  ['none', 'Nobody ranked', (i) => !Object.keys(i.family_best).length],
+  ['done', 'Confirmed', (i) => i.assigned != null],
+  ['changed', 'Changed since push', (i) => changedSincePush(i)],
+];
+
+function flowHtml(pool) {
+  const st = stageNow();
+  const total = pool.length;
+  const done = pool.filter((i) => i.assigned != null).length;
+  const left = total - done;
+  const changes = pool.filter(changedSincePush).length;
+  const open = rankingOpen();
+  const steps = [
+    ['Ranking open', open ? 'Families are ranking' : ''],
+    ['Ranking closed', st.closed_at ? `Closed ${fmtDate(st.closed_at)}` : 'Not yet'],
+    ['Draft assignments', `${done} of ${total} confirmed`],
+    ['Pushed to families', st.pushed_at ? `Pushed ${fmtDate(st.pushed_at)}` : 'Families see nothing yet'],
+  ];
+  const cur = open ? 0 : isPushed() ? 4 : 2;
+  const stepHtml = steps.map(([l, d], k) => {
+    const state_ = k < cur || (isPushed() && k === 3) ? 'done' : k === cur ? 'now cur' : '';
+    return `<li class="step ${state_}"><span class="k">${state_ === 'done' ? '✓' : k + 1}</span><span class="l">${l}${d ? `<span class="d">${esc(d)}</span>` : ''}</span></li>`;
+  }).join('');
+  let bar;
+  if (open) {
+    bar = `<div class="flow-bar"><p class="fb-text"><b>Ranking is open.</b> Families can still change their ranks and top 10s, so the suggestions below can change. Close ranking to start assigning.</p>
+      <div class="fb-act"><button type="button" class="btn" id="close-ranking">Close ranking</button></div></div>`;
+  } else if (!isPushed()) {
+    bar = `<div class="flow-bar"><p class="fb-text"><b>Draft.</b> Families see nothing until you push. ${left
+      ? `<b>${left} item${left === 1 ? '' : 's'}</b> still need${left === 1 ? 's' : ''} a family. Push unlocks when every item has one.`
+      : 'Every item has a family.'}</p>
+      <div class="fb-act"><button type="button" class="link-btn" id="reopen-ranking">Reopen ranking</button>
+        <button type="button" class="btn" id="push" ${left ? 'disabled' : ''}>${left ? `Push locked · ${left} left` : 'Push to families'}</button></div></div>`;
+  } else if (changes) {
+    bar = `<div class="flow-bar has-changes"><p class="fb-text"><span class="pending"><b>${changes} change${changes === 1 ? '' : 's'} not yet pushed.</b></span> Families still see the version from ${esc(fmtDate(st.pushed_at))}.${left ? ` <b>${left} item${left === 1 ? '' : 's'}</b> need${left === 1 ? 's' : ''} a family before you can push.` : ''}</p>
+      <div class="fb-act"><button type="button" class="link-btn" id="show-changes">Show changes</button>
+        <button type="button" class="link-btn" id="discard">Discard</button>
+        <button type="button" class="btn" id="push" ${left ? 'disabled' : ''}>${left ? `Push locked · ${left} left` : 'Push update'}</button></div></div>`;
+  } else {
+    bar = `<div class="flow-bar"><p class="fb-text"><b>Pushed ${esc(fmtDate(st.pushed_at))}.</b> Families see where every item went. Anything you change here stays a draft until you push an update.</p></div>`;
+  }
+  return `<ol class="steps">${stepHtml}</ol>${bar}`;
+}
+
+function tallyHtml(pool) {
+  const un = pool.filter((i) => i.assigned == null).length;
+  return `<span class="c lead">Confirmed so far</span>${state.families.map((f) => `
+    <span class="c"><span class="fam">${esc(famShort(f.id))}</span><span class="n">${pool.filter((i) => i.assigned === f.id).length}</span></span>`).join('')}
+    <span class="c un"><span class="fam">Unassigned</span><span class="n">${un}</span></span>`;
+}
+
+function renderAssign() {
+  if (!state.me.is_admin) { location.hash = '#/'; return; }
+  const f = loadView(ASSIGN_VIEW, { q: '', fam: '', room: '', sort: 'best', chip: 'all' });
+  const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+  shell('assign', `
+    <h1 class="page-title">Assign</h1>
+    <p class="page-sub">Give each item to one family. Each item starts with the family that ranked it best: confirm it, or tap another family.</p>
+    <section class="flow" id="flow"></section>
+    <div class="tally" id="tally"></div>
+    <div class="atools">
+      <input class="input search" type="search" placeholder="Search by name, room or ID" value="${esc(f.q)}" data-f="q" aria-label="Search" />
+      <div class="row">
+        <select class="select" data-f="fam" aria-label="Family">${opt('', 'Any family', f.fam)}${state.families.map((fm) => opt(`a${fm.id}`, `Going to ${famShort(fm.id)}`, f.fam)).join('')}${state.families.map((fm) => opt(`s${fm.id}`, `Best rank: ${famShort(fm.id)}`, f.fam)).join('')}</select>
+        <select class="select" data-f="room" aria-label="Room">${opt('', 'All rooms', f.room)}${rooms().map((r) => opt(r, r, f.room)).join('')}</select>
+        <select class="select" data-f="sort" aria-label="Sort">${opt('best', 'Sort: best rank', f.sort)}${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}</select>
+      </div>
+    </div>
+    <div class="vchips" id="chips" role="group" aria-label="Show"></div>
+    <p class="count" id="count"></p>
+    <div class="legend"><span><span class="fb sugg">Sheri's</span>Suggested: best family rank</span><span><span class="fb on">Sheri's</span>Confirmed</span><span><span class="fb tied">Sheri's</span>Tied for best</span></div>
+    <div id="assign-list"></div>`);
+
+  const pool = () => state.items.filter((i) => !i.hidden);
+  const phoneMq = window.matchMedia('(max-width: 699px)');
+  let places = familyPlaces();
+
+  const drawTop = () => {
+    const p = pool();
+    document.getElementById('flow').innerHTML = flowHtml(p);
+    document.getElementById('tally').innerHTML = tallyHtml(p);
+    document.getElementById('chips').innerHTML = ASSIGN_CHIPS
+      .filter(([k]) => k !== 'changed' || isPushed())
+      .map(([k, label, test]) => `<button type="button" class="chip" data-chip="${k}" aria-pressed="${f.chip === k}">${label} <i>${p.filter((i) => test(i, places)).length}</i></button>`).join('');
+  };
+  const rowsNow = () => {
+    const q = f.q.trim().toLowerCase();
+    const test = (ASSIGN_CHIPS.find(([k]) => k === f.chip) || ASSIGN_CHIPS[0])[2];
+    let rows = pool().filter((i) => {
+      if (f.room && i.room !== f.room) return false;
+      if (!matchesQuery(i, q)) return false;
+      if (f.fam && f.fam[0] === 'a' && i.assigned !== Number(f.fam.slice(1))) return false;
+      if (f.fam && f.fam[0] === 's' && !suggestion(i).fams.includes(Number(f.fam.slice(1)))) return false;
+      return test(i, places);
+    });
+    if (f.sort === 'best') rows = [...rows].sort((a, b) => (suggestion(a).best ?? 9) - (suggestion(b).best ?? 9));
+    else rows = [...rows].sort(SORTS[f.sort] || SORTS.catalog);
+    return rows;
+  };
+  const draw = () => {
+    if (!document.getElementById('assign-list')) return;
+    places = familyPlaces();
+    drawTop();
+    const rows = rowsNow();
+    const phone = phoneMq.matches;
+    document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
+    const body = rows.map((i) => assignRowHtml(i, places, phone)).join('');
+    document.getElementById('assign-list').innerHTML = phone
+      ? `<div class="acards">${body || '<p class="empty-state">Nothing matches. Try another filter.</p>'}</div>`
+      : `<div class="table-wrap"><table class="data assign"><colgroup><col class="c-item">${state.families.map(() => '<col class="c-r">').join('')}<col class="c-why"><col class="c-goes"></colgroup>
+          <thead><tr><th>Item</th>${state.families.map((fm) => `<th class="num">${esc(famShort(fm.id))}</th>`).join('')}<th>Why</th><th class="goes">Goes to</th></tr></thead>
+          <tbody>${body || `<tr><td colspan="${state.families.length + 3}" class="empty-state">Nothing matches. Try another filter.</td></tr>`}</tbody></table></div>`;
+  };
+  draw();
+  wireToolbar(f, ASSIGN_VIEW, draw);
+  phoneMq.addEventListener?.('change', () => { if (currentRoute().name === 'assign') draw(); });
+
+  const redrawRow = (i) => {
+    const el = document.querySelector(`[data-row="${CSS.escape(i.id)}"]`);
+    if (el) el.outerHTML = assignRowHtml(i, places, phoneMq.matches);
+    drawTop();
+  };
+  const setFamily = async (i, fam) => {
+    const before = i.assigned;
+    i.assigned = fam;
+    redrawRow(i);
+    savesInFlight++;
+    try {
+      await state.api.adminAssign(i.id, fam);
+      toast(fam == null ? `${i.name}: back to unassigned` : `${i.name} goes to ${famShort(fam)} family`);
+    } catch (err) {
+      if (!state.me) return;
+      i.assigned = before;
+      redrawRow(i);
+      toast(err.message, true);
+    } finally {
+      savesInFlight--;
+    }
+  };
+  const setStage = (st) => { state.stage = st; draw(); };
+
+  app.querySelector('#chips').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-chip]');
+    if (!b) return;
+    f.chip = b.dataset.chip;
+    setStored(ASSIGN_VIEW, JSON.stringify(f), 'sessionStorage');
+    draw();
+  });
+  app.querySelector('#assign-list').addEventListener('click', (e) => {
+    const row = e.target.closest('[data-row]');
+    const i = row && state.byId.get(row.dataset.row);
+    if (!i) return;
+    const a = e.target.closest('[data-assign]');
+    if (a && !a.disabled) {
+      const fam = Number(a.dataset.assign);
+      setFamily(i, i.assigned === fam ? null : fam); // tapping the chosen family again takes it back
+      return;
+    }
+    const c = e.target.closest('[data-confirm]');
+    if (c) setFamily(i, Number(c.dataset.confirm));
+  });
+  app.querySelector('#flow').addEventListener('click', async (e) => {
+    const b = e.target.closest('button');
+    if (!b || b.disabled) return;
+    try {
+      if (b.id === 'close-ranking') {
+        if (!confirmInline(b, 'Tap again to close ranking. Families will no longer be able to change ranks or top 10s.')) return;
+        setStage(await state.api.adminSetRanking(false));
+        toast('Ranking is closed');
+      } else if (b.id === 'reopen-ranking') {
+        if (!confirmInline(b, 'Tap again to reopen ranking. Your draft assignments are kept.')) return;
+        setStage(await state.api.adminSetRanking(true));
+        toast('Ranking is open again');
+      } else if (b.id === 'push') {
+        if (!confirmInline(b, isPushed() ? 'Tap again to send these changes to every family.' : 'Tap again to send assignments to every family. Ranking cannot reopen after this.')) return;
+        b.disabled = true;
+        const st = await state.api.adminPush();
+        for (const i of state.items) i.went_to = i.hidden ? i.went_to : i.assigned;
+        setStage(st);
+        toast('Assignments sent to families');
+      } else if (b.id === 'discard') {
+        if (!confirmInline(b, 'Tap again to undo every change since the last push.')) return;
+        await state.api.adminDiscardAssignments();
+        for (const i of state.items) if (!i.hidden) i.assigned = i.went_to ?? null;
+        draw();
+        toast('Changes discarded');
+      } else if (b.id === 'show-changes') {
+        f.chip = 'changed';
+        setStored(ASSIGN_VIEW, JSON.stringify(f), 'sessionStorage');
+        draw();
+      }
+    } catch (err) {
+      if (!state.me) return;
+      toast(err.message, true);
+      draw();
+    }
+  });
+}
 
 // ------------------------------------------------------------------ results
 
@@ -1155,7 +1586,7 @@ function renderResults() {
 function downloadCsv() {
   const people = state.families.flatMap((f) => f.members.map((m) => ({ ...m, fam: f })));
   const head = ['Item ID', 'Name', 'Room', 'Photo #', 'Type', 'Subtype', 'Origin', 'Description', 'Hidden',
-    ...people.map((p) => `${p.fam.name}: ${p.name}`), ...state.families.map((f) => `${f.name} best`), 'Overall best', 'Top interest'];
+    ...people.map((p) => `${p.fam.name}: ${p.name}`), ...state.families.map((f) => `${f.name} best`), 'Overall best', 'Top interest', 'Assigned (draft)', 'Went to (pushed)'];
   const cell = (v) => {
     let s = String(v ?? '');
     // Keep spreadsheet apps from running a value as a formula.
@@ -1166,7 +1597,8 @@ function downloadCsv() {
   for (const i of state.items) {
     lines.push([i.id, i.name, i.room, i.photo_no, i.type, i.subtype, i.origin, i.description, i.hidden ? 'yes' : '',
       ...people.map((p) => i.ranks[String(p.id)] ?? ''), ...state.families.map((f) => i.family_best[String(f.id)] ?? ''),
-      i.overall_best ?? '', i.top_families.map(familyName).join(' & ')].map(cell).join(','));
+      i.overall_best ?? '', i.top_families.map(familyName).join(' & '),
+      i.assigned != null ? familyName(i.assigned) : '', i.went_to != null ? familyName(i.went_to) : ''].map(cell).join(','));
   }
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
@@ -1472,6 +1904,7 @@ function currentRoute() {
   if (m) return { name: 'item', id: m[1] };
   if (h === '/family') return { name: 'family' };
   if (h === '/results') return { name: 'results' };
+  if (h === '/assign') return { name: 'assign' };
   if (h === '/admin') return { name: 'admin' };
   if (h === '/fill') return { name: 'fill' };
   return { name: 'browse' };
@@ -1484,6 +1917,7 @@ function route() {
   if (r.name === 'item') renderItem(r.id);
   else if (r.name === 'family') renderFamily();
   else if (r.name === 'results') renderResults();
+  else if (r.name === 'assign') renderAssign();
   else if (r.name === 'admin') renderAdmin();
   else if (r.name === 'fill') renderFill();
   else renderBrowse();

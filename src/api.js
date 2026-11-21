@@ -64,5 +64,9 @@ export function makeApi(key, onInvalidLink = () => {}) {
     adminSetHidden: (item, hidden) => call('fi_admin_set_hidden', { p_item: item, p_hidden: hidden }),
     adminSetEditor: (person, editor) => call('fi_admin_set_editor', { p_person: person, p_editor: editor }),
     draftDone: (item, status) => call('fi_draft_done', { p_item: item, p_status: status }),
+    adminSetRanking: (open) => call('fi_admin_set_ranking', { p_open: open }),
+    adminAssign: (item, family) => call('fi_admin_assign', { p_item: item, p_family: family }),
+    adminPush: () => call('fi_admin_push'),
+    adminDiscardAssignments: () => call('fi_admin_discard_assignments'),
   };
 }
