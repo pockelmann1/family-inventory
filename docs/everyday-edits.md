@@ -8,6 +8,8 @@ project → SQL Editor → New query → paste → Run). Nothing here touches Gi
 
 - **One item:** open it and tap **Edit** next to Name, Type, Subtype, Origin or
   Description. Type is a pick list; choose **Add a new type…** to create one.
+  Subtype is a pick list of the subtypes already used with that type, plus
+  **Add a new subtype…**.
   Every change is kept in the item's edit history.
 - **Many items:** editors and the admin have **Add info** in the menu. It shows
   one item at a time with a big photo and every field. Filter by what is

@@ -153,39 +153,64 @@ const types = () => [...new Set(state.items.map((i) => i.type).filter(Boolean))]
 const BASE_TYPES = ['Art', 'Books', 'Ceramics', 'Decor', 'Furniture', 'Glass', 'Kitchen', 'Lighting',
   'Object', 'Silver and metal', 'Textiles and rugs', 'Other'];
 const typeChoices = () => [...new Set([...BASE_TYPES, ...types()])].sort((a, b) => (a === 'Other') - (b === 'Other') || a.localeCompare(b));
-function typeSelectHtml(current, attrs = '') {
-  const list = typeChoices();
+// Subtypes already used under a type (all used subtypes when no type is chosen yet).
+const subtypeChoices = (type) => [...new Set(state.items
+  .filter((i) => i.subtype && (!type || i.type === type)).map((i) => i.subtype))]
+  .sort((a, b) => a.localeCompare(b));
+const PICKS = {
+  type: { choose: 'Choose a type…', add: 'Add a new type…', example: 'New type, for example Clocks' },
+  subtype: { choose: 'No subtype', add: 'Add a new subtype…', example: 'New subtype, for example Mantel clock' },
+};
+function pickOptions(kind, list, current) {
   const cur = current || '';
+  const t = PICKS[kind];
+  return `<option value="" ${cur ? '' : 'selected'}>${t.choose}</option>
+    ${list.map((v) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+    ${cur && !list.includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ''}
+    <option value="__new">${t.add}</option>`;
+}
+function pickHtml(kind, list, current, attrs = '') {
   return `
-    <span class="type-pick">
-      <select class="select edit-val" ${attrs}>
-        <option value="" ${cur ? '' : 'selected'}>Choose a type…</option>
-        ${list.map((t) => `<option value="${esc(t)}" ${t === cur ? 'selected' : ''}>${esc(t)}</option>`).join('')}
-        ${cur && !list.includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ''}
-        <option value="__new">Add a new type…</option>
-      </select>
-      <input class="input new-type" placeholder="New type, for example Clocks" hidden aria-label="New type" />
+    <span class="type-pick" data-kind="${kind}">
+      <select class="select edit-val" ${attrs}>${pickOptions(kind, list, current)}</select>
+      <input class="input new-type" placeholder="${PICKS[kind].example}" hidden aria-label="${PICKS[kind].add.replace('…', '')}" />
     </span>`;
 }
-// The value of a type picker: the chosen type, or the new one typed in.
-function typeValue(box) {
-  const sel = box.querySelector('.type-pick select');
-  return sel.value === '__new' ? box.querySelector('.new-type').value.trim() : sel.value;
+const typeSelectHtml = (current, attrs = '') => pickHtml('type', typeChoices(), current, attrs);
+const subtypeSelectHtml = (current, type, attrs = '') => pickHtml('subtype', subtypeChoices(type), current, attrs);
+// The value of a picker: the chosen value, or the new one typed in.
+function pickValue(box, kind) {
+  const pick = box.querySelector(`.type-pick[data-kind="${kind}"]`);
+  const sel = pick.querySelector('select');
+  return sel.value === '__new' ? pick.querySelector('.new-type').value.trim() : sel.value;
 }
+const typeValue = (box) => pickValue(box, 'type');
 document.addEventListener('change', (e) => {
   const sel = e.target.closest('.type-pick select');
   if (!sel) return;
   const input = sel.parentElement.querySelector('.new-type');
   input.hidden = sel.value !== '__new';
   if (!input.hidden) input.focus();
+  // A new type changes which subtypes are offered next to it (Add info form).
+  const form = sel.closest('form');
+  const subSel = form?.querySelector('.type-pick[data-kind="subtype"] select');
+  if (sel.parentElement.dataset.kind === 'type' && subSel && subSel.value !== '__new') {
+    const type = sel.value === '__new' ? '' : sel.value;
+    const keep = subSel.value;
+    subSel.innerHTML = pickOptions('subtype', subtypeChoices(type), keep);
+  }
 });
 
 const isPlaceholderName = (i) => /, photo \d+[a-z]?$/i.test(i.name) || i.name === i.room;
 const needs = (i) => ({ name: isPlaceholderName(i), type: !i.type, description: !i.description });
 
+// Other families' ranks stay out of Browse and the item page for people who are ranking,
+// so nobody ranks against what they see (they are on My family and Results).
+const seesOthers = () => !canRank();
+
 // "Most wanted by Susan's family (best rank 2)", or several families when tied.
 function bestLine(item) {
-  if (item.overall_best == null) return '';
+  if (!seesOthers() || item.overall_best == null) return '';
   const names = item.top_families.map((id) => `${familyName(id)}'s`);
   const who = names.length === 1 ? `${names[0]} family`
     : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} families (tied)`;
@@ -298,15 +323,17 @@ function filteredItems(f) {
     if (f.type && i.type !== f.type) return false;
     if (f.mine === 'unranked' && myRank(i) != null) return false;
     if (f.mine === 'ranked' && myRank(i) == null) return false;
-    const fams = Object.keys(i.family_best).length;
-    if (f.interest === 'none' && fams > 0) return false;
-    if (f.interest === 'some' && fams === 0) return false;
-    if (f.interest === 'multi' && fams < 2) return false;
+    if (seesOthers()) { // people who rank don't get the interest filter (see seesOthers)
+      const fams = Object.keys(i.family_best).length;
+      if (f.interest === 'none' && fams > 0) return false;
+      if (f.interest === 'some' && fams === 0) return false;
+      if (f.interest === 'multi' && fams < 2) return false;
+    }
     if (q && !`${i.name} ${i.id} ${i.room} ${i.type} ${i.subtype} ${i.description}`.toLowerCase().includes(q)) return false;
     return true;
   });
   if (f.sort === 'mine') list = [...list].sort((a, b) => (myRank(a) ?? 9) - (myRank(b) ?? 9));
-  if (f.sort === 'wanted') list = [...list].sort((a, b) => (a.overall_best ?? 9) - (b.overall_best ?? 9)); // stable: ties stay in catalog order
+  if (f.sort === 'wanted' && seesOthers()) list = [...list].sort((a, b) => (a.overall_best ?? 9) - (b.overall_best ?? 9)); // stable: ties stay in catalog order
   if (f.sort === 'name') list = [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   if (f.sort === 'room') list = [...list].sort((a, b) => a.room.localeCompare(b.room)); // stable within a room
   return list;
@@ -321,7 +348,7 @@ function welcomeCard() {
       <ol>
         <li>Look through everything from the house. Tap a photo to see it larger.</li>
         <li>Under anything you would like, tap a number: <b>1</b> means you want it most, <b>5</b> means a little.</li>
-        <li>Rank as many or as few as you like, and change them any time. Everyone in the family can see the ranks.</li>
+        <li>Rank as many or as few as you like, and change them any time. Other people's ranks are kept off this page so you can rank with a clear mind. Your family's ranks are on My family, and everyone's are on Results.</li>
         <li>Each family's best (lowest) number counts for that family. Results shows who wants what.</li>
       </ol>
       <button type="button" class="btn" id="welcome-ok">Got it</button>
@@ -363,8 +390,8 @@ function renderBrowse() {
         <select class="select" data-f="room" aria-label="Room">${opt('', 'All rooms', f.room)}${rooms().map((r) => opt(r, r, f.room)).join('')}</select>
         ${types().length ? `<select class="select" data-f="type" aria-label="Type">${opt('', 'All types', f.type)}${types().map((t) => opt(t, t, f.type)).join('')}</select>` : ''}
         ${canRank() ? `<select class="select" data-f="mine" aria-label="My ranks">${opt('all', 'Everything', f.mine)}${opt('unranked', 'Not yet ranked by me', f.mine)}${opt('ranked', 'Ranked by me', f.mine)}</select>` : ''}
-        <select class="select" data-f="interest" aria-label="Interest">${opt('all', 'Any interest', f.interest)}${opt('none', 'Nobody has ranked it', f.interest)}${opt('some', 'Someone wants it', f.interest)}${opt('multi', 'Wanted by 2+ families', f.interest)}</select>
-        <select class="select" data-f="sort" aria-label="Sort">${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}${opt('wanted', 'Sort: most wanted', f.sort)}${canRank() ? opt('mine', 'Sort: my ranks first', f.sort) : ''}</select>
+        ${seesOthers() ? `<select class="select" data-f="interest" aria-label="Interest">${opt('all', 'Any interest', f.interest)}${opt('none', 'Nobody has ranked it', f.interest)}${opt('some', 'Someone wants it', f.interest)}${opt('multi', 'Wanted by 2+ families', f.interest)}</select>` : ''}
+        <select class="select" data-f="sort" aria-label="Sort">${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}${seesOthers() ? opt('wanted', 'Sort: most wanted', f.sort) : ''}${canRank() ? opt('mine', 'Sort: my ranks first', f.sort) : ''}</select>
       </div>
     </div>
     <p class="count" id="count"></p>
@@ -425,10 +452,11 @@ const FIELDS = [
 function renderWhoRanked(item) {
   const box = document.getElementById('who');
   if (!box) return;
-  box.innerHTML = state.families.map((f) => {
+  const shown = seesOthers() ? state.families : state.families.filter((f) => f.id === state.me.family_id);
+  box.innerHTML = shown.map((f) => {
     const best = item.family_best[String(f.id)];
     const ranked = f.members.filter((m) => item.ranks[String(m.id)] != null);
-    const top = item.top_families.includes(f.id);
+    const top = seesOthers() && item.top_families.includes(f.id);
     return `
       <div class="fam">
         <div class="fam-head"><strong>${esc(f.name)}'s family</strong>
@@ -481,7 +509,7 @@ function renderItem(id) {
         <div class="best" data-best="${esc(item.id)}">${bestLine(item)}</div>
         ${canRank() ? `<div class="rank-box">${rankerHtml(item, true)}</div>` : ''}
         <dl class="facts" id="facts"></dl>
-        <h2 class="section-title">Who wants it</h2>
+        <h2 class="section-title">${seesOthers() ? 'Who wants it' : 'Your family'}</h2>
         <div class="who-ranked" id="who"></div>
         <h2 class="section-title">Edit history</h2>
         <button type="button" class="link-btn" id="show-history">Show changes</button>
@@ -549,6 +577,7 @@ function renderItem(id) {
         <dt id="lbl-${f}">${label}</dt>
         <div class="edit-box" style="grid-column: span 2" data-start="${esc(item[f])}">
           ${f === 'type' ? typeSelectHtml(item.type, `aria-labelledby="lbl-${f}"`)
+            : f === 'subtype' ? subtypeSelectHtml(item.subtype, item.type, `aria-labelledby="lbl-${f}"`)
             : multi ? `<textarea class="edit-val" aria-labelledby="lbl-${f}">${esc(item[f])}</textarea>`
             : `<input class="edit-val" aria-labelledby="lbl-${f}" value="${esc(item[f])}" />`}
           <div class="edit-actions">
@@ -569,7 +598,7 @@ function renderItem(id) {
     if (save) {
       const f = save.dataset.save;
       const boxEl = save.closest('.edit-box');
-      const val = f === 'type' ? typeValue(boxEl) : boxEl.querySelector('.edit-val').value;
+      const val = f === 'type' || f === 'subtype' ? pickValue(boxEl, f) : boxEl.querySelector('.edit-val').value;
       save.disabled = true;
       try {
         const res = await state.api.editItem(item.id, f, val, boxEl.dataset.start);
@@ -888,7 +917,7 @@ function renderFill() {
           ${isPlaceholderName(item) ? `<p class="now">Now called “${esc(item.name)}”</p>` : ''}
           <label>Name${mark('name')}<input class="input" name="name" value="${esc(val('name'))}" placeholder="For example: Blue and white teapot" /></label>
           <label class="fill-type">Type${mark('type')}${typeSelectHtml(val('type'))}</label>
-          <label>Subtype${mark('subtype')}<input class="input" name="subtype" value="${esc(val('subtype'))}" placeholder="For example: Painting, Print, Chair" /></label>
+          <label class="fill-type">Subtype${mark('subtype')}${subtypeSelectHtml(val('subtype'), val('type'))}</label>
           <label>Origin<input class="input" name="origin" value="${esc(item.origin)}" placeholder="Where it came from, who made it" /></label>
           <label>Description${mark('description')}<textarea class="input" name="description" rows="4">${esc(val('description'))}</textarea></label>
           <p class="conflict-note" hidden></p>
@@ -925,7 +954,7 @@ function renderFill() {
       const want = {
         name: form.elements.namedItem('name').value.trim(),
         type: typeValue(form),
-        subtype: form.elements.namedItem('subtype').value.trim(),
+        subtype: pickValue(form, 'subtype'),
         origin: form.elements.namedItem('origin').value.trim(),
         description: form.elements.namedItem('description').value.trim(),
       };

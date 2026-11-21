@@ -57,11 +57,17 @@ flowchart LR
 | Address | Screen | Who sees it |
 | --- | --- | --- |
 | `#/` | Browse: the collection, filters, rank buttons | everyone |
-| `#/item/ITEM-0001` | One item: photos, ranking, details, who wants it, edit history | everyone |
+| `#/item/ITEM-0001` | One item: photos, ranking, details, own family's ranks, edit history | everyone |
 | `#/family` | My family: each family member's ranks | family members |
 | `#/results` | Results: best rank and most-wanted family per item, CSV download for admin | everyone |
 | `#/fill` | Add info: one item at a time, with photo-based suggestions | editors and admin |
 | `#/admin` | Admin: links, editors, who has started | admin |
+
+People who rank do not see other families' ranks on Browse or the item page
+(no "most wanted" line, interest filter or most-wanted sort), so they are
+not swayed by them. They see them on My family (their own family) and
+Results. The admin, who does not rank, sees everything everywhere. This is
+the `seesOthers()` check in `src/main.js`.
 
 ## Security in one paragraph
 
