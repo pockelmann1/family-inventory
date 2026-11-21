@@ -31,35 +31,84 @@ function toast(msg, isError = false) {
 const fmtDate = (iso) =>
   iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 
+// Links sent to people use ?k=, which survives email security wrappers that
+// drop or rewrite the # part of a link.
 function personalLink(key) {
-  return `${location.origin}${BASE}#k=${key}`;
+  return `${location.origin}${BASE}?k=${key}`;
 }
 
 // ------------------------------------------------------------------ sign-in
+//
+// A personal link looks like .../family-inventory/?k=KEY (older links use
+// #k=KEY). Once the server accepts the key it stays in the address as ?k=, so
+// the site keeps working from a bookmark, a Home Screen icon, "Open in
+// Safari" from inside Gmail or Facebook, or after Safari clears its storage.
+// It is also kept in this browser's storage as a backup.
 
-// A personal link looks like .../family-inventory/#k=KEY (or ?k=KEY). The key
-// is remembered on this device and removed from the address bar.
-function takeKeyFromUrl() {
-  const fromHash = location.hash.match(/[#&]k=([A-Za-z0-9_-]{20,})/);
-  const fromQuery = new URLSearchParams(location.search).get('k');
-  const key = fromHash?.[1] || (fromQuery && /^[A-Za-z0-9_-]{20,}$/.test(fromQuery) ? fromQuery : null);
-  if (key) {
-    setStored(KEY_STORE, key);
-    history.replaceState(null, '', `${BASE}#/`);
+const KEY_RE = /[#?&/]k=([A-Za-z0-9_-]{20,})/;
+const NAME_STORE = 'fi_name';
+const VIEW_STORES = ['fi_browse', 'fi_results', 'fi_fam_all', 'fi_scroll'];
+
+// The key in the address, if any. Tolerates links that arrive with # or =
+// written as %23 or %3D, and trailing punctuation from the message.
+function keyFromUrl() {
+  for (const part of [location.hash, location.search, location.pathname]) {
+    let s = part;
+    for (let i = 0; i < 2; i++) { try { s = decodeURIComponent(s); } catch { break; } }
+    const m = s.match(KEY_RE);
+    if (m) return m[1];
   }
-  return key;
+  return null;
 }
 
-let memoryKey = takeKeyFromUrl();
-const currentKey = () => memoryKey || getStored(KEY_STORE);
+// True when the address carries a k= that isn't a usable key (cut off, or
+// with text typed onto the end), so we can say so instead of showing Welcome.
+const brokenKeyInUrl = () => !keyFromUrl() && /[#?&]k(=|%3D)/i.test(`${location.hash}${location.search}`);
+
+let memoryKey = null;
+const savedKey = () => getStored(KEY_STORE) || getStored(KEY_STORE, 'sessionStorage');
+
+function rememberKey(key, name) {
+  memoryKey = key;
+  setStored(KEY_STORE, key);
+  setStored(KEY_STORE, key, 'sessionStorage');
+  setStored(NAME_STORE, name);
+  const route = location.hash.startsWith('#/') ? location.hash : '#/';
+  history.replaceState(null, '', `${BASE}?k=${key}${route}`);
+}
+
+function forgetKey() {
+  memoryKey = null;
+  setStored(KEY_STORE, null);
+  setStored(KEY_STORE, null, 'sessionStorage');
+  setStored(NAME_STORE, null);
+  VIEW_STORES.forEach((k) => setStored(k, null, 'sessionStorage'));
+  history.replaceState(null, '', BASE);
+}
 
 function showSignedOut(message) {
   app.innerHTML = `
     <div class="center-box">
       <p class="eyebrow">Family Inventory</p>
       <h1>Welcome</h1>
-      <p>${esc(message || 'Please open the personal link you were sent by text or email. It signs you in on this device.')}</p>
+      <p>${esc(message || 'Please tap the personal link Paul sent you by text or email. It signs you in on this device.')}</p>
     </div>`;
+}
+
+// Called by the API whenever the server turns a key down mid-visit.
+function onInvalidLink(key) {
+  if (key !== memoryKey) return;
+  forgetKey();
+  state.me = null;
+  state.api = null;
+  showSignedOut('This link has been turned off or replaced. Please tap the newest link Paul sent you, or ask him for a new one.');
+}
+
+function signOutHere() {
+  forgetKey();
+  state.me = null;
+  state.api = null;
+  showSignedOut('You are signed out on this device. Tap your personal link to sign in again.');
 }
 
 // ------------------------------------------------------------------ state
@@ -91,10 +140,13 @@ const photoOf = (item) => item.photos[0] || null;
 const rooms = () => [...new Set(state.items.map((i) => i.room).filter(Boolean))].sort();
 const types = () => [...new Set(state.items.map((i) => i.type).filter(Boolean))].sort();
 
+// "Most wanted by Susan's family (best rank 2)", or several families when tied.
 function bestLine(item) {
   if (item.overall_best == null) return '';
-  const names = item.top_families.map(familyName).join(' & ');
-  return `Top interest: ${esc(names)} (${item.overall_best})`;
+  const names = item.top_families.map((id) => `${familyName(id)}'s`);
+  const who = names.length === 1 ? `${names[0]} family`
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} families (tied)`;
+  return `Most wanted by ${esc(who)}, best rank ${item.overall_best}`;
 }
 
 // ------------------------------------------------------------------ layout
@@ -110,14 +162,19 @@ function shell(active, content) {
     <header class="site-header">
       <div class="inner">
         <a class="wordmark" href="#/">Family Inventory</a>
-        <span class="whoami">${esc(state.me.name)}</span>
+        <span class="whoami">${canRank() ? 'Ranking as' : 'Signed in as'} <b>${esc(state.me.name)}</b></span>
         <nav class="nav" aria-label="Main">
           ${tabs.map(([k, href, label]) => `<a href="${href}" class="${k === active ? 'active' : ''}">${label}</a>`).join('')}
         </nav>
       </div>
     </header>
     <main id="main">${content}</main>
-    <footer class="site-footer">Signed in as ${esc(state.me.name)}. Ranks: 1 means most wanted.</footer>`;
+    <footer class="site-footer">Signed in as ${esc(state.me.name)}. Ranks: 1 means most wanted.
+      <button type="button" class="link-btn" id="sign-out">Not ${esc(state.me.name)}? Sign out of this device</button></footer>`;
+  document.getElementById('sign-out').addEventListener('click', (e) => {
+    if (!confirmInline(e.target, 'Tap again to sign out. You will need your personal link to sign back in.')) return;
+    signOutHere();
+  });
 }
 
 function rankerHtml(item, large = false) {
@@ -127,7 +184,9 @@ function rankerHtml(item, large = false) {
     <div class="ranker${large ? ' large' : ''}" data-item="${esc(item.id)}" role="group" aria-label="My rank for ${esc(item.name)}">
       ${large ? '<span class="label">My rank <span class="hint">1 = want most</span></span>' : ''}
       ${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-rank="${n}" aria-pressed="${mine === n}" aria-label="Rank ${n}">${n}</button>`).join('')}
-      ${large && mine != null ? '<button type="button" class="clear" data-rank="">Clear</button>' : ''}
+      ${large
+        ? (mine != null ? '<button type="button" class="clear" data-rank="">Clear my rank</button>' : '')
+        : `<button type="button" class="clear${mine == null ? ' off' : ''}" data-rank="" ${mine == null ? 'tabindex="-1" aria-hidden="true"' : ''}>Clear my rank</button>`}
     </div>`;
 }
 
@@ -143,23 +202,37 @@ document.addEventListener('click', async (e) => {
   if (!btn) return;
   e.preventDefault();
   const box = btn.closest('.ranker');
-  const item = state.byId.get(box.dataset.item);
+  const id = box.dataset.item;
+  const item = state.byId.get(id);
   if (!item) return;
-  const want = btn.dataset.rank === '' ? null : Number(btn.dataset.rank);
-  const next = want === myRank(item) ? null : want; // tapping the same number clears it
+  const next = btn.dataset.rank === '' ? null : Number(btn.dataset.rank);
+  // Tapping your current number does nothing, so a stray tap never erases a rank.
+  if (next === myRank(item)) {
+    toast(next == null ? 'Not ranked yet' : `Already ranked ${next}. Use "Clear my rank" to remove it.`);
+    return;
+  }
   box.querySelectorAll('button').forEach((b) => (b.disabled = true));
+  savesInFlight++;
   try {
-    const res = await state.api.setRank(item.id, next);
-    Object.assign(item, res);
-    box.outerHTML = rankerHtml(item, box.classList.contains('large'));
-    document.querySelectorAll(`[data-best="${CSS.escape(item.id)}"]`).forEach((el) => (el.innerHTML = bestLine(item)));
-    if (currentRoute().name === 'item') renderWhoRanked(item);
+    const res = await state.api.setRank(id, next);
+    // A background refresh may have replaced the item while we waited.
+    const fresh = state.byId.get(id) || item;
+    Object.assign(fresh, res);
+    document.querySelectorAll(`.ranker[data-item="${CSS.escape(id)}"]`).forEach((el) => {
+      el.outerHTML = rankerHtml(fresh, el.classList.contains('large'));
+    });
+    document.querySelectorAll(`[data-best="${CSS.escape(id)}"]`).forEach((el) => (el.innerHTML = bestLine(fresh)));
+    if (currentRoute().name === 'item') renderWhoRanked(fresh);
     toast(next == null ? 'Rank cleared' : `Ranked ${next}`);
   } catch (err) {
+    if (!state.me) return; // signed out
     toast(err.message, true);
     box.querySelectorAll('button').forEach((b) => (b.disabled = false));
+  } finally {
+    savesInFlight--;
   }
 });
+let savesInFlight = 0;
 
 // ------------------------------------------------------------------ browse
 
@@ -189,7 +262,7 @@ function renderBrowse() {
   const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
   shell('browse', `
     <h1 class="page-title">The Collection</h1>
-    <p class="page-sub">${canRank() ? 'Tap 1 to 5 under anything you would like. 1 means you want it most. Tap your number again to clear it.' : 'Browse everything in the house and see who is interested.'}</p>
+    <p class="page-sub">${canRank() ? 'Tap 1 to 5 under anything you would like. 1 means you want it most, 5 means a little.' : 'Browse everything in the house and see who is interested.'}</p>
     <div class="toolbar">
       <input class="input search" type="search" placeholder="Search by name, room or ID" value="${esc(f.q)}" data-f="q" aria-label="Search" />
       <div class="row">
@@ -331,12 +404,18 @@ function renderItem(id) {
   // Swipe left/right on the photo to move between items.
   let sx = null;
   const stage = document.getElementById('stage');
-  stage.addEventListener('touchstart', (e) => { sx = e.touches[0].clientX; }, { passive: true });
+  let sy = null;
+  stage.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    sx = t.clientX < 24 ? null : t.clientX; // leave the screen edge to the browser's Back swipe
+    sy = t.clientY;
+  }, { passive: true });
   stage.addEventListener('touchend', (e) => {
     if (sx == null) return;
     const dx = e.changedTouches[0].clientX - sx;
+    const dy = e.changedTouches[0].clientY - sy;
     sx = null;
-    if (Math.abs(dx) < 60) return;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy)) return; // mostly sideways only
     const target = dx < 0 ? next : prev;
     if (target) location.hash = `#/item/${target.id}`;
   });
@@ -357,36 +436,59 @@ function renderItem(id) {
       const f = editBtn.dataset.edit;
       const row = editBtn.closest('.fact');
       const multi = f === 'description';
+      const label = FIELDS.find(([k]) => k === f)[1];
       row.innerHTML = `
-        <dt>${FIELDS.find(([k]) => k === f)[1]}</dt>
-        <div class="edit-box" style="grid-column: span 2">
-          ${multi ? `<textarea id="edit-val">${esc(item[f])}</textarea>` : `<input id="edit-val" value="${esc(item[f])}" />`}
+        <dt id="lbl-${f}">${label}</dt>
+        <div class="edit-box" style="grid-column: span 2" data-start="${esc(item[f])}">
+          ${multi ? `<textarea class="edit-val" aria-labelledby="lbl-${f}">${esc(item[f])}</textarea>` : `<input class="edit-val" aria-labelledby="lbl-${f}" value="${esc(item[f])}" />`}
           <div class="edit-actions">
             <button type="button" class="btn small" data-save="${f}">Save</button>
             <button type="button" class="btn ghost small" data-cancel>Cancel</button>
           </div>
         </div>`;
-      row.querySelector('#edit-val').focus();
+      row.querySelector('.edit-val').focus();
       return;
     }
-    if (e.target.closest('[data-cancel]')) { drawFacts(); return; }
+    if (e.target.closest('[data-cancel]')) {
+      const field = e.target.closest('.fact').dataset.field;
+      drawFacts();
+      document.querySelector(`[data-edit="${field}"]`)?.focus();
+      return;
+    }
     const save = e.target.closest('[data-save]');
     if (save) {
       const f = save.dataset.save;
-      const val = document.getElementById('edit-val').value;
+      const boxEl = save.closest('.edit-box');
+      const val = boxEl.querySelector('.edit-val').value;
       save.disabled = true;
       try {
-        const res = await state.api.editItem(item.id, f, val);
+        const res = await state.api.editItem(item.id, f, val, boxEl.dataset.start);
         item[f] = res.value;
         if (f === 'name') document.getElementById('title').textContent = item.name;
+        if (res.conflict) {
+          // Someone else saved first. Show their version and keep what this person typed.
+          boxEl.dataset.start = res.value ?? '';
+          save.disabled = false;
+          boxEl.querySelector('.conflict-note')?.remove();
+          boxEl.insertAdjacentHTML('afterbegin', `<p class="conflict-note">${esc(res.by || 'Someone')} changed this while you were editing. It now says: “${esc(res.value || '—')}”. Tap Save again to replace it with your text, or Cancel to keep theirs.</p>`);
+          return;
+        }
         drawFacts();
         if (!document.getElementById('history').hidden) loadHistory();
         toast('Saved');
       } catch (err) {
+        if (!state.me) return;
         toast(err.message, true);
         save.disabled = false;
       }
     }
+  });
+
+  document.getElementById('facts').addEventListener('keydown', (e) => {
+    const box = e.target.closest('.edit-box');
+    if (!box) return;
+    if (e.key === 'Escape') { e.preventDefault(); box.querySelector('[data-cancel]').click(); }
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); box.querySelector('[data-save]').click(); }
   });
 
   const loadHistory = async () => {
@@ -494,7 +596,7 @@ function renderResults() {
   const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
   shell('results', `
     <h1 class="page-title">Results</h1>
-    <p class="page-sub">Each family's best rank per item, the overall best, and the family or families with the highest interest. Ties are listed together.</p>
+    <p class="page-sub">For each item: the best (lowest) rank anyone gave, which family wants it most, and each family's best rank. Ties are listed together.</p>
     <div class="toolbar"><div class="row">
       <select class="select" data-f="view" aria-label="Show">${opt('ranked', 'Items anyone ranked', f.view)}${opt('multi', 'Wanted by 2 or more families', f.view)}${opt('all', 'All items', f.view)}</select>
       <select class="select" data-f="room" aria-label="Room">${opt('', 'All rooms', f.room)}${rooms().map((r) => opt(r, r, f.room)).join('')}</select>
@@ -510,7 +612,7 @@ function renderResults() {
     rows = [...rows].sort((a, b) => (a.overall_best ?? 9) - (b.overall_best ?? 9) || a.id.localeCompare(b.id));
     document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
     document.getElementById('tbl').innerHTML = `
-      <thead><tr><th>Item</th><th class="num key">Best</th><th class="key">Top interest</th>${state.families.map((fm) => `<th class="num">${esc(fm.name)}</th>`).join('')}</tr></thead>
+      <thead><tr><th>Item</th><th class="num key">Best</th><th class="key">Most wanted by</th>${state.families.map((fm) => `<th class="num">${esc(fm.name)}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td><td class="num key">${rankCell(i.overall_best)}</td><td class="key who">${esc(i.top_families.map(familyName).join(', '))}</td>${state.families.map((fm) => `<td class="num">${rankCell(i.family_best[String(fm.id)])}</td>`).join('')}</tr>`).join('')
         || `<tr><td colspan="${state.families.length + 3}" class="empty-state">No ranks yet.</td></tr>`}</tbody>`;
   };
@@ -529,8 +631,9 @@ function downloadCsv() {
     ...people.map((p) => `${p.fam.name}: ${p.name}`), ...state.families.map((f) => `${f.name} best`), 'Overall best', 'Top interest'];
   const cell = (v) => {
     let s = String(v ?? '');
-    if (/^[=+\-@]/.test(s)) s = `'${s}`; // keep spreadsheet apps from running it as a formula
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    // Keep spreadsheet apps from running a value as a formula.
+    if (/^[=+\-@\t\r]/.test(s) || /[\r\n]\s*[=+\-@]/.test(s)) s = `'${s}`;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [head.map(cell).join(',')];
   for (const i of state.items) {
@@ -567,6 +670,8 @@ async function renderAdmin() {
   const box = document.getElementById('people');
   let people;
   const draw = () => {
+    // Keep any "new link" panels open: each key is shown only once.
+    const panels = [...box.querySelectorAll('.new-link')].map((el) => [el.closest('.person')?.dataset.id, el]);
     box.innerHTML = people.map((p) => `
       <div class="person" data-id="${p.id}">
         <div>
@@ -580,6 +685,7 @@ async function renderAdmin() {
           ${p.has_link && p.id !== state.me.id ? `<button type="button" class="btn ghost small" data-off="${p.id}">Turn off</button>` : ''}
         </div>
       </div>`).join('');
+    for (const [id, el] of panels) box.querySelector(`.person[data-id="${id}"]`)?.append(el);
   };
   try {
     people = await state.api.adminPeople();
@@ -600,10 +706,10 @@ async function renderAdmin() {
         const key = await state.api.adminNewLink(p.id);
         p.has_link = true;
         p.last_seen_at = null;
-        if (p.id === state.me.id) { memoryKey = key; setStored(KEY_STORE, key); state.api = makeApi(key); }
+        if (p.id === state.me.id) { state.api = makeApi(key, onInvalidLink); rememberKey(key, state.me.name); }
         draw();
         showNewLink(p, key);
-      } catch (err) { toast(err.message, true); nb.disabled = false; }
+      } catch (err) { if (state.me) toast(err.message, true); nb.disabled = false; }
     }
     if (ob) {
       const p = people.find((x) => x.id === Number(ob.dataset.off));
@@ -611,6 +717,7 @@ async function renderAdmin() {
       try {
         await state.api.adminTurnOffLink(p.id);
         p.has_link = false;
+        box.querySelector(`.person[data-id="${p.id}"] .new-link`)?.remove();
         draw();
         toast(`${p.name}'s link is off`);
       } catch (err) { toast(err.message, true); }
@@ -620,7 +727,14 @@ async function renderAdmin() {
   function showNewLink(p, key) {
     const link = personalLink(key);
     const row = box.querySelector(`.person[data-id="${p.id}"]`);
-    const msg = `Hi ${p.name}, here is your personal link to the family inventory. Please don't share it: ${link}`;
+    // The link goes alone on the last line: some phones cut the end off a link
+    // that has text right after it.
+    const msg = `Hi ${p.name}, this is your own link to the family inventory. Please don't forward it.\n\n`
+      + 'Tap it any time to open the site signed in as you, on your phone, tablet or computer. '
+      + 'Keep this message so you can tap it again later. If the site ever shows "Welcome", just tap this link again.\n\n'
+      + link;
+    const enc = encodeURIComponent(msg);
+    const sms = /iPhone|iPad|Macintosh/.test(navigator.userAgent) ? `sms:&body=${enc}` : `sms:?body=${enc}`;
     const div = document.createElement('div');
     div.className = 'new-link';
     div.innerHTML = `
@@ -629,8 +743,8 @@ async function renderAdmin() {
       <div class="actions">
         <button type="button" class="btn small" data-copy>Copy link</button>
         ${navigator.share ? '<button type="button" class="btn ghost small" data-share>Share…</button>' : ''}
-        <a class="btn ghost small" style="display:inline-flex;align-items:center;text-decoration:none" href="sms:?&body=${encodeURIComponent(msg)}">Text</a>
-        <a class="btn ghost small" style="display:inline-flex;align-items:center;text-decoration:none" href="mailto:?subject=${encodeURIComponent('Your family inventory link')}&body=${encodeURIComponent(msg)}">Email</a>
+        <a class="btn ghost small" style="display:inline-flex;align-items:center;text-decoration:none" href="${sms}">Text</a>
+        <a class="btn ghost small" style="display:inline-flex;align-items:center;text-decoration:none" href="mailto:?subject=${encodeURIComponent('Your family inventory link')}&body=${enc}">Email</a>
       </div>`;
     row.append(div);
     div.querySelector('[data-copy]').addEventListener('click', async () => {
@@ -675,36 +789,102 @@ function route() {
 }
 
 window.addEventListener('hashchange', () => {
-  const k = takeKeyFromUrl();
-  if (k) { memoryKey = k; start(); return; }
+  const k = keyFromUrl();
+  if (k && k !== memoryKey) { start(); return; } // a different link was opened in this tab
   route();
 });
 
-// Pick up other people's new ranks when the page comes back into view.
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState !== 'visible' || !state.api || Date.now() - state.loadedAt < 120000) return;
+// Pick up other people's new ranks when the page comes back into view,
+// without losing the person's place on the page.
+async function refresh(force = false) {
+  if (!state.api || savesInFlight) return;
+  if (!force && Date.now() - state.loadedAt < 120000) return;
   if (document.querySelector('.edit-box, .new-link, .lightbox')) return;
-  try { ingest(await state.api.load()); route(); } catch { /* keep what we have */ }
-});
+  try {
+    const data = await state.api.load();
+    if (!state.me || savesInFlight || document.querySelector('.edit-box, .new-link, .lightbox')) return;
+    const y = window.scrollY;
+    const historyOpen = document.getElementById('history')?.hidden === false;
+    ingest(data);
+    route();
+    window.scrollTo(0, y);
+    if (historyOpen) document.getElementById('show-history')?.click();
+  } catch { /* keep what we have; a turned-off link is handled by onInvalidLink */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
+// Coming back with the Back button can show a frozen copy of the page; check the link is still good.
+window.addEventListener('pageshow', (e) => { if (e.persisted) refresh(true); });
+
+function showLoadError(err) {
+  app.innerHTML = `<div class="center-box"><h1>Sorry</h1><p>${esc(err.message)}</p><p><button type="button" class="btn" id="retry">Try again</button></p></div>`;
+  document.getElementById('retry').addEventListener('click', () => start());
+}
+
+// Ask before a different person's link takes over a device someone else uses.
+function confirmSwitch(currentName, newName) {
+  return new Promise((resolve) => {
+    app.innerHTML = `
+      <div class="center-box">
+        <p class="eyebrow">Family Inventory</p>
+        <h1>Who is ranking?</h1>
+        <p>This device is signed in as <b>${esc(currentName)}</b>. The link you opened is <b>${esc(newName)}</b>'s.</p>
+        <div class="choices">
+          <button type="button" class="btn" data-pick="new">Continue as ${esc(newName)}</button>
+          <button type="button" class="btn ghost" data-pick="old">Stay as ${esc(currentName)}</button>
+        </div>
+      </div>`;
+    app.querySelector('.choices').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-pick]');
+      if (b) resolve(b.dataset.pick === 'new');
+    });
+  });
+}
 
 async function start() {
-  const key = currentKey();
-  if (!key) { showSignedOut(); return; }
-  app.innerHTML = '<p class="loading">Loading the collection…</p>';
-  state.api = makeApi(key);
-  try {
-    ingest(await state.api.load());
-  } catch (err) {
-    if (err.invalidLink) {
-      setStored(KEY_STORE, null);
-      memoryKey = null;
-      showSignedOut('This link no longer works. Please ask Paul for a new one.');
-    } else {
-      app.innerHTML = `<div class="center-box"><h1>Sorry</h1><p>${esc(err.message)}</p><p><button class="btn" onclick="location.reload()">Try again</button></p></div>`;
-    }
+  const fromUrl = keyFromUrl();
+  const saved = savedKey();
+  const savedName = getStored(NAME_STORE);
+  const tries = [...new Set([fromUrl, memoryKey, saved].filter(Boolean))];
+  if (!tries.length) {
+    showSignedOut(brokenKeyInUrl()
+      ? 'This link looks cut off. Please tap the whole link in the newest message from Paul, or ask him to send it again.'
+      : undefined);
     return;
   }
-  route();
+  app.innerHTML = '<p class="loading">Loading the collection…</p>';
+  for (const key of tries) {
+    let data;
+    try {
+      data = await makeApi(key).load();
+    } catch (err) {
+      if (err.invalidLink) continue; // try the next key we know about
+      showLoadError(err);
+      return;
+    }
+    const otherPerson = savedName && savedName !== data.me.name && saved && saved !== key;
+    if (otherPerson) {
+      let savedStillWorks = false;
+      try { await makeApi(saved).load(); savedStillWorks = true; } catch { /* old person's link is gone */ }
+      if (savedStillWorks && !(await confirmSwitch(savedName, data.me.name))) {
+        history.replaceState(null, '', `${BASE}?k=${saved}#/`);
+        memoryKey = null;
+        start();
+        return;
+      }
+      VIEW_STORES.forEach((k) => setStored(k, null, 'sessionStorage')); // don't inherit their filters
+    }
+    state.api = makeApi(key, onInvalidLink);
+    ingest(data);
+    rememberKey(key, data.me.name);
+    route();
+    if (fromUrl && key !== fromUrl) toast('That link is out of date, so you are still signed in with your newer one.');
+    else if (otherPerson) toast(`You are now signed in as ${data.me.name}.`);
+    return;
+  }
+  forgetKey();
+  showSignedOut(fromUrl
+    ? 'This link did not work. It may be cut off or out of date. Please tap the link in the newest message from Paul, or ask him for a new one.'
+    : 'Your link has been replaced. Please tap the newest link Paul sent you.');
 }
 
 start();
