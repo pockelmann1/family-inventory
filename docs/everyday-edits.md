@@ -6,32 +6,35 @@ project → SQL Editor → New query → paste → Run). Nothing here touches Gi
 
 ## Fix or add an item's details (website)
 
-Only the admin and people marked **Can add info** can do this; everyone else
-sees the details without Edit buttons.
+The admin and the four siblings can do this; children see the details
+without an Edit info button. The database refuses edits from anyone else.
 
-- **One item:** open it and tap **Edit** next to Name, Type, Subtype, Origin or
-  Description. Type is a pick list; choose **Add a new type…** to create one.
-  Subtype is a pick list of the subtypes already used with that type, plus
-  **Add a new subtype…**.
-  Every change is kept in the item's edit history.
-- **Many items:** editors and the admin have **Add info** in the menu. It shows
-  one item at a time with a big photo and every field. Filter by what is
-  missing ("Needs a name", "Has a suggestion", a room…), then **Save and next**
-  or **Skip**.
-- **Suggestions:** items marked "suggested" were pre-filled from the photo.
-  Nothing is saved until someone taps Save; **Suggestion is wrong, discard it**
-  throws it away.
+- In Browse, tap **Edit info** under any item (or **Edit info** on the item's
+  own page). A panel opens with the photo and every field: Name, Type,
+  Subtype, Origin, Description. Type is a pick list; choose **Add a new type…**
+  to create one. Subtype is a pick list of the subtypes already used with that
+  type, plus **Add a new subtype…**. **Save** saves only the fields that
+  changed.
+- Every change is kept in the item's **Edit history** (on the item page, open
+  to everyone). The admin and the siblings get **Restore** next to each earlier
+  value; restoring is itself a change, so it shows in the history too.
 - If two people edit the same field at once, the second one is warned and sees
   the newer text before deciding.
 
-## Give someone the Add info screen (website)
+## Adjust a family rank (website)
 
-Admin → find the person → **Can add info**. Tap again to remove it.
+A family's rank for an item starts as the lowest number anyone in that family
+gave. The family's sibling can change it while ranking is open: on the item
+page (under "Your family") or by tapping the family rank on My family. It then
+shows "Set by …" and **Reset to automatic** puts it back. Everyone's own ranks
+are never changed, and Assign uses the family rank.
 
-## Hide an item instead of deleting it (website)
+## Remove an item instead of deleting it (website)
 
-Open the item → **Hide this item** (admin only). This keeps its ranks and
-history and can be undone. Prefer it to deleting.
+Open the item → **Remove from website** (admin only, tap twice). It disappears
+for everyone, the admin included, but stays in the database with its ranks and
+history. Admin → **Removed items** lists them, each with **Restore**. Prefer it
+to deleting.
 
 ## Add a new item (SQL)
 

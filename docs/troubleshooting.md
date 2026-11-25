@@ -54,7 +54,10 @@ keep-alive**.
   the old rank is kept.
 - Edits are in the item's **Edit history**. If someone's text was replaced,
   the old text is there and can be put back.
-- Hidden items cannot be ranked or edited by family members.
+- Removed items cannot be ranked or edited by anyone until the admin restores
+  them (Admin → Removed items).
+- Only siblings and the admin can edit item details or family ranks; children
+  get a message saying so.
 
 ## Someone ranked as the wrong person
 

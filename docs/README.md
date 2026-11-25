@@ -7,7 +7,7 @@ Everything someone new needs to run, change or fix this site. Start with
 | --- | --- |
 | [How it fits together](architecture.md) | understand the parts and how a page load works |
 | [Database](database.md) | look up a table or function, or change the schema safely |
-| [Links and admin](links-and-admin.md) | make, send or turn off someone's link, hide items, add editors |
+| [Links and admin](links-and-admin.md) | make, send or turn off someone's link, remove and restore items, download photos |
 | [Everyday edits without code](everyday-edits.md) | fix item details, add or remove an item or photo, add a person |
 | [Code changes](code-changes.md) | run the site on a computer, test, deploy or roll back |
 | [Secrets and accounts](secrets-and-accounts.md) | find out what accounts and keys exist and how to rotate them |

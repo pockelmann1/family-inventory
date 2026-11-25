@@ -501,7 +501,7 @@ footer.site-footer { text-align: center; color: var(--muted); font-size: 14px; p
 .type-pick { display: flex; flex-direction: column; gap: 6px; width: 100%; }
 .type-pick .new-type[hidden] { display: none; }
 
-/* Add info screen */
+/* Edit info form (in the Edit info panel) */
 .fill-item { display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 900px) { .fill-item { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 48px; align-items: start; } .fill-photo { position: sticky; top: 110px; } }
 .fill-photo { background: var(--tile); display: flex; align-items: center; justify-content: center; }
@@ -720,3 +720,50 @@ table.data th.went, table.data td.went { width: 1%; white-space: nowrap; padding
   .tally .lead { display: none; }
   .tally .c:nth-child(2) { border-left: 0; }
 }
+
+/* ------------------------------------------------------------ pre-launch: edit info, family rank, removed items, photo download */
+.count-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 0 0 16px; }
+.count-row .count { margin: 0; }
+.count-row .link-btn { font-size: 14px; }
+.card .id-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.card .edit-info { font-size: 13px; color: var(--muted); min-height: 32px; padding: 0; }
+@media (hover: hover) { .card .edit-info:hover { color: var(--ink); } }
+.edit-row { margin: -16px 0 28px; }
+.admin-note { font-size: 13px; color: var(--muted); margin: 8px 0; max-width: 420px; }
+.history .restore { display: block; font-size: 13px; margin-top: 2px; min-height: 32px; padding: 0; text-align: left; }
+
+body.modal-open { overflow: hidden; }
+.edit-modal {
+  position: fixed; inset: 0; z-index: 55; background: rgba(20, 20, 20, 0.35);
+  display: flex; align-items: flex-start; justify-content: center; overflow-y: auto;
+  padding: max(16px, env(safe-area-inset-top)) 16px 16px;
+}
+.edit-sheet { background: #fff; width: 100%; max-width: 1000px; padding: 20px; margin: auto 0; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.12); }
+@media (min-width: 700px) { .edit-sheet { padding: 28px 32px 32px; } }
+.edit-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.edit-head h2 { font-family: var(--serif); font-weight: 500; font-size: 28px; margin: 0; }
+.edit-head .close { background: #fff; border: 1px solid var(--line); width: 44px; height: 44px; font-size: 22px; line-height: 1; }
+.edit-sheet .fill-photo { position: static; }
+.edit-sheet .fill-photo img { max-height: 46vh; }
+@media (min-width: 900px) { .edit-sheet .fill-photo img { max-height: 64vh; } }
+.edit-foot { font-size: 13px; color: var(--muted); margin: 0; }
+
+/* Family rank: "set" marks a rank a sibling adjusted; siblings tap it to change it. */
+.fr-set { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gold); margin-top: 2px; line-height: 1; }
+.fr-btn { background: none; border: 0; padding: 4px 6px; min-height: var(--tap); min-width: var(--tap); cursor: pointer; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; }
+.fr-btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.fr-btn[aria-expanded='true'] { box-shadow: inset 0 -2px 0 var(--ink); }
+@media (hover: hover) { .fr-btn:hover .dash { color: var(--ink); } }
+.fr-row td { background: #fafafa; padding: 12px 16px 14px; }
+.fr-row .ranker { margin-top: 0; }
+.fr-note { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+.who-ranked .famranker { margin-top: 12px; max-width: 360px; }
+.famranker .label .hint { text-transform: none; letter-spacing: 0; }
+
+.removed { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.removed li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.removed li.loading { display: block; padding: 16px 0; font-size: 16px; }
+.removed li.none { color: var(--muted); }
+.removed img, .removed .ph { width: 48px; height: 48px; object-fit: contain; background: var(--tile); flex: none; }
+.removed .t { flex: 1; min-width: 0; }
+.removed .s { color: var(--muted); font-size: 13px; }

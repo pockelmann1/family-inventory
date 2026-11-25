@@ -46,7 +46,7 @@ flowchart LR
    Facebook still works.
 3. `fi_load` checks the SHA-256 hash of the key against `app.people`, then
    returns everything the screens need in one response: the person, families,
-   items with ranks, results, signed photo links, and (for editors) drafts.
+   items with ranks, results, signed photo links, and (for siblings and admin) drafts.
 4. The browser draws the screen. Every later action is one more `fi_*` call
    with the same key: `fi_set_rank`, `fi_edit_item`, and so on.
 5. If any call answers "invalid link" (the link was turned off or replaced),
@@ -56,13 +56,14 @@ flowchart LR
 
 | Address | Screen | Who sees it |
 | --- | --- | --- |
-| `#/` | Browse: the collection, filters, rank buttons | everyone |
-| `#/item/ITEM-0001` | One item: photos, ranking, details, own family's ranks, edit history | everyone |
+| `#/` | Browse: the collection, filters, rank buttons, Download photos (zip of the filtered items), Edit info on each card (siblings and admin) | everyone |
+| `#/item/ITEM-0001` | One item: photos, ranking, details, own family's ranks and family rank (siblings can adjust it), edit history (Restore for siblings and admin), Remove from website (admin) | everyone |
 | `#/family` | My family: your top 10 (drag to reorder, add from a search of what you ranked), the family top 10 (worked out from everyone's lists: 10 points for 1st place down to 1 for 10th, added up) and each person's top 10 side by side, then each family member's ranks | family members |
 | `#/assign` | Assign: close ranking, give each item to a family, push to families, push updates | admin |
 | `#/results` | Results: each family's family top 10 side by side and every person's list, best rank and most-wanted family per item, CSV download | admin |
-| `#/fill` | Add info: one item at a time, with photo-based suggestions | editors and admin |
-| `#/admin` | Admin: links, editors, who has started | admin |
+| `#/admin` | Admin: links, who has started, removed items with Restore | admin |
+
+`#/fill` (the old Add info screen) now opens Browse.
 
 Family members only ever see their own family's ranks, so nobody ranks
 against what other families chose. The database enforces this: `fi_load`
@@ -93,7 +94,7 @@ All tables sit in schema `app`, which the Supabase Data API does not expose,
 with row-level security forced on and no table grants to the public roles. The
 browser can only call `public.fi_*` functions. Each one is `security definer`
 with an empty `search_path`, and the first thing it does is check the link key
-(`app.person_for`), the admin flag (`app.admin_for`) or the editor flag
+(`app.person_for`), the admin flag (`app.admin_for`) or the sibling role
 (`app.editor_for`). Photos are in a private bucket and reach the browser only
 through signed links that expire after 3 days. The page sends no referrer and
 has a content security policy that only allows this site's own scripts and the
