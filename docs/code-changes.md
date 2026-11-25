@@ -74,7 +74,7 @@ live database.
 
 | File | What is in it |
 | --- | --- |
-| `src/main.js` | Sign-in (`keyFromUrl`, `start`), shared state, and one `render…` function per screen: Browse, Item, My family, Results, Add info, Admin. Rank clicks are handled once for the whole page. |
+| `src/main.js` | Sign-in (`keyFromUrl`, `start`), shared state, and one `render…` function per screen: Browse (with the Edit info panel and photo download), Item, My family, Results, Assign, Admin. `src/zip.js` writes the photo zip. Rank clicks are handled once for the whole page. |
 | `src/api.js` | `makeApi(key)`: one method per `fi_*` function, 20-second timeout, plain-language errors, sign-out on an invalid link. |
 | `src/style.css` | Colors and sizes at the top (`:root`), then one section per screen. |
 | `index.html` | Page shell, security headers (no referrer, no indexing, content security policy). |

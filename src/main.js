@@ -7,6 +7,7 @@ import '@fontsource/jost/latin-400.css';
 import '@fontsource/jost/latin-500.css';
 import './style.css';
 import { makeApi } from './api.js';
+import { makeZip } from './zip.js';
 
 const app = document.getElementById('app');
 const BASE = import.meta.env.BASE_URL;
@@ -147,6 +148,11 @@ function ingest(data) {
 const familyName = (id) => state.families.find((f) => f.id === Number(id))?.name ?? '';
 const myRank = (item) => item.ranks[String(state.me.id)] ?? null;
 const canRank = () => state.me.family_id != null;
+// The admin and the four siblings can change item details; children cannot.
+const canEdit = () => !!state.me.is_editor;
+// Siblings can adjust their own family's rank for an item while ranking is open.
+const canSetFamilyRank = () => state.me.role === 'sibling' && canRank() && rankingOpen();
+const famSet = (item, famId) => (item.family_set || {})[String(famId)] || null;
 const photoOf = (item) => item.photos[0] || null;
 const rooms = () => [...new Set(state.items.map((i) => i.room).filter(Boolean))].sort();
 const types = () => [...new Set(state.items.map((i) => i.type).filter(Boolean))].sort();
@@ -194,7 +200,7 @@ document.addEventListener('change', (e) => {
   const input = sel.parentElement.querySelector('.new-type');
   input.hidden = sel.value !== '__new';
   if (!input.hidden) input.focus();
-  // A new type changes which subtypes are offered next to it (Add info form).
+  // A new type changes which subtypes are offered next to it (Edit info form).
   const form = sel.closest('form');
   const subSel = form?.querySelector('.type-pick[data-kind="subtype"] select');
   if (sel.parentElement.dataset.kind === 'type' && subSel && subSel.value !== '__new') {
@@ -204,8 +210,6 @@ document.addEventListener('change', (e) => {
   }
 });
 
-const isPlaceholderName = (i) => /, photo \d+[a-z]?$/i.test(i.name) || i.name === i.room;
-const needs = (i) => ({ name: isPlaceholderName(i), type: !i.type, description: !i.description });
 
 // Other families' ranks stay out of Browse and the item page for people who are ranking,
 // so nobody ranks against what they see (their own family is on My family; Results is admin only).
@@ -228,7 +232,6 @@ function shell(active, content) {
     ...(canRank() ? [['family', '#/family', 'My family']] : []),
     ...(state.me.is_admin ? [['results', '#/results', 'Results'], ['assign', '#/assign', 'Assign']] : []),
   ];
-  if (state.me.is_editor) tabs.push(['fill', '#/fill', 'Add info']);
   if (state.me.is_admin) tabs.push(['admin', '#/admin', 'Admin']);
   app.innerHTML = `
     <header class="site-header">
@@ -281,7 +284,7 @@ function thumbImg(item, cls = '') {
 // Rank clicks anywhere on the page.
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.ranker button[data-rank]');
-  if (!btn) return;
+  if (!btn || btn.closest('.famranker')) return;
   e.preventDefault();
   const box = btn.closest('.ranker');
   const id = box.dataset.item;
@@ -365,7 +368,7 @@ function welcomeCard() {
         <li>Look through everything from the house. Tap a photo to see it larger.</li>
         <li>Under anything you would like, tap a number: <b>1</b> means you want it most, <b>5</b> means a little.</li>
         <li>Rank as many or as few as you like, and change them any time. Other people's ranks are kept off this page so you can rank with a clear mind. Your family's ranks are on My family.</li>
-        <li>Each family's best (lowest) number counts for that family.</li>
+        <li>Your family's rank for an item starts as the lowest number anyone in your family gave. ${esc(familyName(state.me.family_id))} can adjust it.</li>
       </ol>
       <button type="button" class="btn" id="welcome-ok">Got it</button>
     </section>`;
@@ -412,21 +415,28 @@ function renderBrowse() {
         <select class="select" data-f="sort" aria-label="Sort">${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}${seesOthers() ? opt('wanted', 'Sort: most wanted', f.sort) : ''}${canRank() ? opt('mine', 'Sort: my ranks first', f.sort) : ''}</select>
       </div>
     </div>
-    <p class="count" id="count"></p>
+    <div class="count-row"><p class="count" id="count"></p><button type="button" class="link-btn" id="dl-photos">Download photos</button></div>
     <div class="grid" id="grid"></div>`);
 
+  let shown = [];
   const draw = () => {
     if (!document.getElementById('grid')) return; // left the page before the search debounce fired
     const list = filteredItems(f);
+    shown = list;
     document.getElementById('count').textContent = `${list.length} of ${state.items.length} items`;
+    const dl = document.getElementById('dl-photos');
+    if (!dl.dataset.busy) {
+      dl.hidden = !list.length;
+      dl.textContent = list.length === state.items.length ? 'Download all photos' : `Download photos of these ${list.length}`;
+    }
     document.getElementById('grid').innerHTML = list.length
       ? list.map((i) => `
-        <article class="card">
+        <article class="card" data-id="${esc(i.id)}">
           <a class="photo" href="#/item/${esc(i.id)}">${thumbImg(i)}</a>
           <div class="meta">
-            <div class="room">${esc(i.room)}${i.hidden ? ' · hidden' : ''}</div>
+            <div class="room">${esc(i.room)}</div>
             <a class="name" href="#/item/${esc(i.id)}">${esc(i.name)}</a>
-            <div class="id">${esc(i.id)}</div>
+            <div class="id-row"><span class="id">${esc(i.id)}</span>${canEdit() ? `<button type="button" class="link-btn edit-info" data-editinfo="${esc(i.id)}" aria-label="Edit info for ${esc(i.name)}">Edit info</button>` : ''}</div>
             <div class="best" data-best="${esc(i.id)}">${bestLine(i)}</div>
             ${isPushed() && i.went_to != null ? `<div class="went">${wentTag(i)}</div>` : ''}
             ${rankerHtml(i)}
@@ -444,7 +454,7 @@ function renderBrowse() {
       clearTimeout(t);
       t = setTimeout(draw, el.dataset.f === 'q' ? 150 : 0);
     }));
-
+  document.getElementById('dl-photos').addEventListener('click', (e) => downloadPhotos(shown, e.currentTarget, f));
 }
 
 document.addEventListener('click', (e) => {
@@ -476,17 +486,70 @@ function renderWhoRanked(item) {
     const best = item.family_best[String(f.id)];
     const ranked = f.members.filter((m) => item.ranks[String(m.id)] != null);
     const top = seesOthers() && item.top_families.includes(f.id);
+    const set = famSet(item, f.id);
+    const mine = f.id === state.me.family_id;
     return `
       <div class="fam">
         <div class="fam-head"><strong>${esc(f.name)}'s family</strong>
-          <span>${best != null ? `Best ${best}${top ? ' <span class="top-tag">· most wanted</span>' : ''}` : '<span style="color:var(--faint)">No ranks yet</span>'}</span></div>
+          <span>${best != null ? `Family rank ${best}${top ? ' <span class="top-tag">· most wanted</span>' : ''}` : '<span style="color:var(--faint)">No ranks yet</span>'}</span></div>
         <ul>${ranked.length ? ranked.map((m) => `<li>${esc(m.name)} <b>${item.ranks[String(m.id)]}</b></li>`).join('') : ''}</ul>
+        ${set ? `<p class="fr-note">${famSetNote(set)}</p>` : ''}
+        ${mine && canSetFamilyRank() ? famRankerHtml(item) : ''}
       </div>`;
   }).join('');
 }
 
+// "Set by Susan. Automatically it would be 1."
+function famSetNote(set) {
+  return `Set by ${esc(set.by || 'a sibling')}. ${set.auto != null ? `Automatically it would be ${set.auto}.` : 'Nobody in the family has ranked it.'}`;
+}
+
+// The sibling's 1 to 5 buttons for the family rank, with Reset back to automatic.
+function famRankerHtml(item) {
+  const set = famSet(item, state.me.family_id);
+  return `
+    <div class="ranker famranker" data-item="${esc(item.id)}" role="group" aria-label="Family rank for ${esc(item.name)}">
+      <span class="label">Adjust family rank <span class="hint">everyone's own ranks stay as they are</span></span>
+      ${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-rank="${n}" aria-pressed="${set?.rank === n}" aria-label="Family rank ${n}">${n}</button>`).join('')}
+      ${set ? `<button type="button" class="clear" data-rank="">Reset to automatic${set.auto != null ? ` (${set.auto})` : ''}</button>` : ''}
+    </div>`;
+}
+
+let familyRedraw = null; // the My family table's redraw, while that page is open
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.famranker button[data-rank]');
+  if (!btn) return;
+  e.preventDefault();
+  const box = btn.closest('.famranker');
+  const id = box.dataset.item;
+  const item = state.byId.get(id);
+  if (!item) return;
+  const next = btn.dataset.rank === '' ? null : Number(btn.dataset.rank);
+  if (next === (famSet(item, state.me.family_id)?.rank ?? null)) {
+    toast(`The family rank is already ${next}`);
+    return;
+  }
+  box.querySelectorAll('button').forEach((b) => (b.disabled = true));
+  savesInFlight++;
+  try {
+    const res = await state.api.setFamilyRank(id, next);
+    const fresh = state.byId.get(id) || item;
+    Object.assign(fresh, res);
+    if (currentRoute().name === 'item') renderWhoRanked(fresh);
+    if (currentRoute().name === 'family') familyRedraw?.();
+    const now = fresh.family_best[String(state.me.family_id)];
+    toast(next == null ? `Back to automatic${now != null ? `: ${now}` : ''}` : `Family rank set to ${next}`);
+  } catch (err) {
+    if (!state.me) return;
+    toast(err.message, true);
+    box.querySelectorAll('button').forEach((b) => (b.disabled = false));
+  } finally {
+    savesInFlight--;
+  }
+});
+
 // The item page's back link returns to the list the person came from.
-const BACK_LABELS = { '#/': 'The collection', '#/family': 'My family', '#/results': 'Results', '#/fill': 'Add info', '#/admin': 'Admin' };
+const BACK_LABELS = { '#/': 'The collection', '#/family': 'My family', '#/results': 'Results', '#/admin': 'Admin' };
 document.addEventListener('click', (e) => {
   const a = e.target.closest('a[href^="#/item/"]');
   if (!a || currentRoute().name === 'item') return;
@@ -530,6 +593,7 @@ function renderItem(id) {
         ${canRank() ? `<div class="top-line" id="top-line" data-item="${esc(item.id)}">${topLineHtml(item)}</div>` : ''}
         ${canRank() ? `<div class="rank-box">${rankerHtml(item, true)}</div>` : ''}
         <dl class="facts" id="facts"></dl>
+        ${canEdit() ? `<p class="edit-row"><button type="button" class="btn ghost small" data-editinfo="${esc(item.id)}">Edit info</button></p>` : ''}
         <h2 class="section-title">${seesOthers() ? 'Who wants it' : 'Your family'}</h2>
         <div class="who-ranked" id="who"></div>
         <h2 class="section-title">Edit history</h2>
@@ -537,7 +601,8 @@ function renderItem(id) {
         <ul class="history" id="history" hidden></ul>
         ${state.me.is_admin ? `
           <h2 class="section-title">Admin</h2>
-          <button type="button" class="btn ghost small" id="toggle-hidden">${item.hidden ? 'Show this item to everyone' : 'Hide this item'}</button>
+          <button type="button" class="btn ghost small" id="remove-item">Remove from website</button>
+          <p class="admin-note">Takes it off the website for everyone, you included. It stays in the database, and you can put it back from the Admin page.</p>
           ${photoOf(item)?.drive ? `<p style="font-size:13px"><a href="${esc(photoOf(item).drive)}" target="_blank" rel="noopener">Original photo in Google Drive</a></p>` : ''}` : ''}
       </div>
     </div>`);
@@ -582,101 +647,247 @@ function renderItem(id) {
       <div class="fact" data-field="${f}">
         <dt>${label}</dt>
         <dd class="${item[f] ? '' : 'empty'}">${item[f] ? esc(item[f]) : 'Not filled in'}</dd>
-        ${state.me.is_editor ? `<button type="button" class="link-btn" data-edit="${f}">Edit</button>` : '<span></span>'}
       </div>`).join('');
   };
   drawFacts();
-
-  document.getElementById('facts').addEventListener('click', async (e) => {
-    const editBtn = e.target.closest('[data-edit]');
-    if (editBtn) {
-      const f = editBtn.dataset.edit;
-      const row = editBtn.closest('.fact');
-      const multi = f === 'description';
-      const label = FIELDS.find(([k]) => k === f)[1];
-      row.innerHTML = `
-        <dt id="lbl-${f}">${label}</dt>
-        <div class="edit-box" style="grid-column: span 2" data-start="${esc(item[f])}">
-          ${f === 'type' ? typeSelectHtml(item.type, `aria-labelledby="lbl-${f}"`)
-            : f === 'subtype' ? subtypeSelectHtml(item.subtype, item.type, `aria-labelledby="lbl-${f}"`)
-            : multi ? `<textarea class="edit-val" aria-labelledby="lbl-${f}">${esc(item[f])}</textarea>`
-            : `<input class="edit-val" aria-labelledby="lbl-${f}" value="${esc(item[f])}" />`}
-          <div class="edit-actions">
-            <button type="button" class="btn small" data-save="${f}">Save</button>
-            <button type="button" class="btn ghost small" data-cancel>Cancel</button>
-          </div>
-        </div>`;
-      row.querySelector('.edit-val').focus();
-      return;
-    }
-    if (e.target.closest('[data-cancel]')) {
-      const field = e.target.closest('.fact').dataset.field;
-      drawFacts();
-      document.querySelector(`[data-edit="${field}"]`)?.focus();
-      return;
-    }
-    const save = e.target.closest('[data-save]');
-    if (save) {
-      const f = save.dataset.save;
-      const boxEl = save.closest('.edit-box');
-      const val = f === 'type' || f === 'subtype' ? pickValue(boxEl, f) : boxEl.querySelector('.edit-val').value;
-      save.disabled = true;
-      try {
-        const res = await state.api.editItem(item.id, f, val, boxEl.dataset.start);
-        item[f] = res.value;
-        if (f === 'name') document.getElementById('title').textContent = item.name;
-        if (res.conflict) {
-          // Someone else saved first. Show their version and keep what this person typed.
-          boxEl.dataset.start = res.value ?? '';
-          save.disabled = false;
-          boxEl.querySelector('.conflict-note')?.remove();
-          boxEl.insertAdjacentHTML('afterbegin', `<p class="conflict-note">${esc(res.by || 'Someone')} changed this while you were editing. It now says: “${esc(res.value || '—')}”. Tap Save again to replace it with your text, or Cancel to keep theirs.</p>`);
-          return;
-        }
-        drawFacts();
-        if (!document.getElementById('history').hidden) loadHistory();
-        toast('Saved');
-      } catch (err) {
-        if (!state.me) return;
-        toast(err.message, true);
-        save.disabled = false;
-      }
-    }
-  });
-
-  document.getElementById('facts').addEventListener('keydown', (e) => {
-    const box = e.target.closest('.edit-box');
-    if (!box) return;
-    if (e.key === 'Escape') { e.preventDefault(); box.querySelector('[data-cancel]').click(); }
-    if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); box.querySelector('[data-save]').click(); }
-  });
 
   const loadHistory = async () => {
     const ul = document.getElementById('history');
     ul.hidden = false;
     ul.innerHTML = '<li class="loading">Loading…</li>';
     try {
-      const rows = await state.api.history(item.id);
-      ul.innerHTML = rows.length
-        ? rows.map((r) => `<li><b>${esc(r.by)}</b> changed ${esc(r.field)} on ${esc(fmtDate(r.at))}<br>from “${esc(r.old || '—')}” to “${esc(r.new || '—')}”</li>`).join('')
-        : '<li>No changes yet.</li>';
+      rows = await state.api.history(item.id);
+      ul.innerHTML = rows.length ? rows.map(historyRow).join('') : '<li>No changes yet.</li>';
     } catch (err) {
       ul.innerHTML = `<li>${esc(err.message)}</li>`;
     }
   };
+  let rows = [];
+  const label = (field) => (FIELDS.find(([k]) => k === field)?.[1] || field).toLowerCase();
+  // Each change, with Restore for editors when the earlier value differs from today's.
+  const historyRow = (r) => {
+    if (r.field === 'hidden') {
+      return `<li><b>${esc(r.by)}</b> ${r.new === 'true' ? 'removed this item from the website' : 'put this item back on the website'} on ${esc(fmtDate(r.at))}</li>`;
+    }
+    const restorable = canEdit() && FIELDS.some(([k]) => k === r.field) && (r.old ?? '') !== (item[r.field] ?? '')
+      && !(r.field === 'name' && !(r.old ?? '').trim());
+    return `<li><b>${esc(r.by)}</b> changed the ${esc(label(r.field))} on ${esc(fmtDate(r.at))}<br>from “${esc(r.old || '—')}” to “${esc(r.new || '—')}”
+      ${restorable ? `<button type="button" class="link-btn restore" data-restore="${esc(r.id)}">Restore “${esc(clip(r.old || '—'))}”</button>` : ''}</li>`;
+  };
   document.getElementById('show-history').addEventListener('click', (e) => { e.target.remove(); loadHistory(); });
-
-  document.getElementById('toggle-hidden')?.addEventListener('click', async (e) => {
+  document.getElementById('history').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-restore]');
+    if (!b) return;
+    const r = rows.find((x) => String(x.id) === b.dataset.restore);
+    if (!r || !confirmInline(b, `Tap again to change the ${label(r.field)} back to “${clip(r.old || '—')}”.`)) return;
+    b.disabled = true;
     try {
-      await state.api.adminSetHidden(item.id, !item.hidden);
-      item.hidden = !item.hidden;
-      e.target.textContent = item.hidden ? 'Show this item to everyone' : 'Hide this item';
-      toast(item.hidden ? 'Hidden from family members' : 'Visible to everyone');
-    } catch (err) { toast(err.message, true); }
+      const res = await state.api.editItem(item.id, r.field, r.old ?? '', item[r.field] ?? '');
+      item[r.field] = res.value;
+      document.getElementById('title').textContent = item.name;
+      drawFacts();
+      toast(res.conflict ? `${res.by || 'Someone'} changed it just now. Check the history, then try again.` : 'Restored', !!res.conflict);
+      loadHistory();
+    } catch (err) {
+      if (!state.me) return;
+      toast(err.message, true);
+      b.disabled = false;
+    }
+  });
+
+  document.getElementById('remove-item')?.addEventListener('click', async (e) => {
+    if (!confirmInline(e.target, `Tap again to remove ${item.name} from the website.`)) return;
+    e.target.disabled = true;
+    try {
+      await state.api.adminSetHidden(item.id, true);
+      state.items = state.items.filter((i) => i.id !== item.id);
+      state.byId.delete(item.id);
+      toast(`${item.id} removed. Put it back any time from the Admin page.`);
+      location.hash = '#/';
+    } catch (err) { toast(err.message, true); e.target.disabled = false; }
   });
 
   renderWhoRanked(item);
   window.scrollTo(0, 0);
+}
+
+// ------------------------------------------------------------------ edit info
+//
+// The admin and the siblings edit an item's details from Browse (the Edit info
+// link on each card) or from the item page. Every change goes into the item's
+// edit history, where it can be restored.
+
+const clip = (t, n = 40) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-editinfo]');
+  if (!b) return;
+  const item = state.byId.get(b.dataset.editinfo);
+  if (item) openEditor(item, b);
+});
+
+function openEditor(item, opener) {
+  if (!canEdit()) return;
+  document.querySelector('.edit-modal')?.remove();
+  const p = photoOf(item);
+  const box = document.createElement('div');
+  box.className = 'edit-modal';
+  box.innerHTML = `
+    <div class="edit-sheet" role="dialog" aria-modal="true" aria-labelledby="edit-h">
+      <div class="edit-head">
+        <h2 id="edit-h">Edit info</h2>
+        <button type="button" class="close" data-close aria-label="Close">&times;</button>
+      </div>
+      <div class="fill-item">
+        <div class="fill-photo">${p?.full ? `<img src="${esc(p.full)}" alt="${esc(item.name)}" />` : '<div class="placeholder">Photo coming</div>'}</div>
+        <form class="fill-form" autocomplete="off">
+          <div class="eyebrow">${esc(item.room)}${item.photo_no ? ` · Photo ${esc(item.photo_no)}` : ''} · ${esc(item.id)}</div>
+          <label>Name<input class="input" name="name" value="${esc(item.name)}" /></label>
+          <label class="fill-type">Type${typeSelectHtml(item.type)}</label>
+          <label class="fill-type">Subtype${subtypeSelectHtml(item.subtype, item.type)}</label>
+          <label>Origin<input class="input" name="origin" value="${esc(item.origin)}" placeholder="Where it came from, who made it" /></label>
+          <label>Description<textarea class="input" name="description" rows="4">${esc(item.description)}</textarea></label>
+          <p class="conflict-note" hidden></p>
+          <p class="edit-foot">Every change is kept in the item's edit history, so it can be restored.</p>
+          <div class="fill-actions">
+            <button type="submit" class="btn">Save</button>
+            <button type="button" class="btn ghost" data-close>Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+  const close = () => {
+    box.remove();
+    document.body.classList.remove('modal-open');
+    document.removeEventListener('keydown', onKey);
+    if (opener?.isConnected) opener.focus({ preventScroll: true });
+  };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  box.addEventListener('click', (e) => { if (e.target === box || e.target.closest('[data-close]')) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.append(box);
+  document.body.classList.add('modal-open');
+  const form = box.querySelector('form');
+  form.querySelector('[name="name"]').focus({ preventScroll: true });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = form.querySelector('[type="submit"]');
+    const note = form.querySelector('.conflict-note');
+    const want = {
+      name: form.elements.namedItem('name').value.trim(),
+      type: typeValue(form),
+      subtype: pickValue(form, 'subtype'),
+      origin: form.elements.namedItem('origin').value.trim(),
+      description: form.elements.namedItem('description').value.trim(),
+    };
+    if (!want.name) want.name = item.name; // a blank name keeps the old one
+    btn.disabled = true;
+    let changed = 0;
+    try {
+      for (const [k, v] of Object.entries(want)) {
+        if (v === (item[k] || '')) continue;
+        const res = await state.api.editItem(item.id, k, v, item[k] || '');
+        item[k] = res.value;
+        if (res.conflict) {
+          // Someone else saved first: show their version and let this person decide.
+          note.hidden = false;
+          note.textContent = `${res.by || 'Someone'} changed the ${k} while you were working. It now says “${res.value || '—'}”. Check it, then tap Save again.`;
+          const field = k === 'type' || k === 'subtype' ? null : form.querySelector(`[name="${k}"]`);
+          if (field) field.value = res.value || '';
+          btn.disabled = false;
+          return;
+        }
+        changed++;
+      }
+      close();
+      toast(changed ? 'Saved' : 'Nothing changed');
+      if (changed) afterEdit(item);
+    } catch (err) {
+      if (state.me) toast(err.message, true);
+      btn.disabled = false;
+    }
+  });
+}
+
+// Show an edit without losing the person's place on the page.
+function afterEdit(item) {
+  if (currentRoute().name === 'item') {
+    const y = window.scrollY;
+    const historyOpen = document.getElementById('history')?.hidden === false;
+    renderItem(item.id);
+    window.scrollTo(0, y);
+    if (historyOpen) document.getElementById('show-history')?.click();
+    return;
+  }
+  document.querySelectorAll(`.card[data-id="${CSS.escape(item.id)}"]`).forEach((card) => {
+    card.querySelector('.name').textContent = item.name;
+    card.querySelector('.photo img')?.setAttribute('alt', item.name);
+  });
+}
+
+// ------------------------------------------------------------------ photo download
+//
+// Saves the full-size photos of the items on screen (after search and filters)
+// as one zip file, named by item ID and name.
+
+const safeName = (t) => t.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80).replace(/[. ]+$/, '');
+
+async function downloadPhotos(list, btn, f) {
+  if (btn.dataset.busy) return;
+  const nPhotos = list.reduce((n, i) => n + i.photos.filter((p) => p.full).length, 0);
+  if (!nPhotos) { toast('These items have no photos yet'); return; }
+  if (!confirmInline(btn, `Tap again to save ${nPhotos} photo${nPhotos === 1 ? '' : 's'} (about ${Math.max(1, Math.round(nPhotos * 0.09))} MB) as one zip file.`)) return;
+  btn.dataset.busy = '1';
+  const label = btn.textContent;
+  try {
+    btn.textContent = 'Getting photos…';
+    // Photo links expire, so ask for fresh ones first.
+    const fresh = new Map((await state.api.load()).items.map((i) => [i.id, i]));
+    const jobs = [];
+    for (const it of list) {
+      const photos = (fresh.get(it.id) || it).photos.filter((p) => p.full);
+      photos.forEach((p, n) => jobs.push({ url: p.full, base: `${it.id} ${safeName(it.name)}${photos.length > 1 ? ` - photo ${n + 1}` : ''}` }));
+    }
+    const files = new Array(jobs.length);
+    let done = 0;
+    let failed = 0;
+    let next = 0;
+    const worker = async () => {
+      while (next < jobs.length) {
+        const j = next++;
+        let data = null;
+        let type = '';
+        for (let attempt = 0; attempt < 2 && !data; attempt++) {
+          try {
+            const r = await fetch(jobs[j].url);
+            if (r.ok) { type = r.headers.get('content-type') || ''; data = new Uint8Array(await r.arrayBuffer()); }
+          } catch { /* try once more */ }
+        }
+        if (data) files[j] = { name: `${jobs[j].base}.${/png/.test(type) ? 'png' : /webp/.test(type) ? 'webp' : 'jpg'}`, data };
+        else failed++;
+        done++;
+        btn.textContent = `Getting photos… ${done} of ${jobs.length}`;
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, worker));
+    const ok = files.filter(Boolean);
+    if (!ok.length) throw new Error('The photos could not be downloaded. Check your connection and try again.');
+    const what = f.type ? safeName(f.type).toLowerCase() : f.room ? safeName(f.room).toLowerCase() : list.length === state.items.length ? 'all' : 'selected';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(makeZip(ok));
+    a.download = `family-inventory-photos-${what.replace(/ /g, '-')}-${new Date().toISOString().slice(0, 10)}.zip`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    toast(failed ? `Saved ${ok.length} photos. ${failed} could not be downloaded; try again for those.` : `Saved ${ok.length} photo${ok.length === 1 ? '' : 's'}`, !!failed);
+  } catch (err) {
+    if (state.me) toast(err.message, true);
+  } finally {
+    delete btn.dataset.busy;
+    btn.textContent = label;
+  }
 }
 
 function openLightbox(item, start, onChange) {
@@ -765,15 +976,24 @@ function renderFamily() {
     ${canRank() ? myTopHtml() : ''}
     ${(() => { const t = familyTopsHtml(fam); return t ? `<section class="family-tops"><div class="top10-head"><h2 class="section-title">Your family's top 10s</h2><p class="top10-note">The family top 10 adds up everyone's lists: 1st place is worth 10 points, 10th is worth 1.</p></div>${t}</section>` : ''; })()}
     <h2 class="section-title">Everything your family ranked</h2>
-    <p class="table-note">The family best is the lowest number any of you gave.${isPushed() ? ' Went to shows which family each item was given to.' : ''}</p>
+    <p class="table-note">The family rank starts as the lowest number any of you gave. ${esc(fam.name)} can adjust it${canSetFamilyRank() ? ': tap a family rank to change it' : ''}. “Set” marks a rank ${esc(fam.name)} adjusted.${isPushed() ? ' Went to shows which family each item was given to.' : ''}</p>
     ${tableToolbar(f, (opt) => `
       <select class="select" data-f="who" aria-label="Show">${opt('any', 'Ranked by anyone in the family', f.who)}${opt('me', 'Ranked by me', f.who)}${fam.members.filter((m) => m.id !== state.me.id).map((m) => opt(String(m.id), `Ranked by ${m.name}`, f.who)).join('')}${opt('notme', 'Family ranked, I have not', f.who)}${opt('all', 'All items', f.who)}</select>
       ${isPushed() ? `<select class="select" data-f="went" aria-label="Went to">${opt('', 'Went to: any family', f.went)}${opt('mine', 'Went to my family', f.went)}${opt('other', 'Went to another family', f.went)}</select>` : ''}
-      <select class="select" data-f="sort" aria-label="Sort">${opt('best', 'Sort: family best', f.sort)}${opt('mine', 'Sort: my rank', f.sort)}${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}</select>`)}
+      <select class="select" data-f="sort" aria-label="Sort">${opt('best', 'Sort: family rank', f.sort)}${opt('mine', 'Sort: my rank', f.sort)}${opt('catalog', 'Sort: catalog order', f.sort)}${opt('room', 'Sort: room', f.sort)}${opt('name', 'Sort: name A to Z', f.sort)}</select>`)}
     <p class="count" id="count"></p>
     <div class="table-wrap"><table class="data" id="tbl"></table></div>`);
 
-  const famRanked = (i) => fam.members.some((m) => i.ranks[String(m.id)] != null);
+  const famRanked = (i) => i.family_best[String(fam.id)] != null || fam.members.some((m) => i.ranks[String(m.id)] != null);
+  let open = null; // the item whose family rank buttons are showing
+  const famCell = (i) => {
+    const best = i.family_best[String(fam.id)];
+    const set = famSet(i, fam.id);
+    const inner = `${rankCell(best) || '<span class="dash">–</span>'}${set ? '<span class="fr-set">set</span>' : ''}`;
+    return canSetFamilyRank()
+      ? `<td class="num key fr"><button type="button" class="fr-btn" data-fr="${esc(i.id)}" aria-expanded="${open === i.id}" aria-label="Family rank for ${esc(i.name)}: ${best ?? 'none'}${set ? `, set by ${esc(set.by)}` : ''}. Tap to adjust." ${set ? `title="Set by ${esc(set.by)}"` : ''}>${inner}</button></td>`
+      : `<td class="num key fr" ${set ? `title="Set by ${esc(set.by)}"` : ''}>${inner}</td>`;
+  };
   const draw = () => {
     if (!document.getElementById('tbl')) return;
     const q = f.q.trim().toLowerCase();
@@ -798,11 +1018,19 @@ function renderFamily() {
     const wentTh = isPushed() ? '<th class="went">Went to</th>' : '';
     const wentTd = (i) => (isPushed() ? `<td class="went">${wentTag(i) || '<span class="wtag none">–</span>'}</td>` : '');
     document.getElementById('tbl').innerHTML = `
-      <thead><tr><th>Item</th>${wentTh}<th class="num key">Family best</th>${fam.members.map((m) => `<th class="num ${m.id === state.me.id ? 'me-col' : ''}">${m.id === state.me.id ? 'You' : esc(m.name)}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td>${wentTd(i)}<td class="num key">${rankCell(i.family_best[String(fam.id)])}</td>${fam.members.map((m) => `<td class="num ${m.id === state.me.id ? 'me-col' : ''}">${rankCell(i.ranks[String(m.id)])}</td>`).join('')}</tr>`).join('')
+      <thead><tr><th>Item</th>${wentTh}<th class="num key">Family rank</th>${fam.members.map((m) => `<th class="num ${m.id === state.me.id ? 'me-col' : ''}">${m.id === state.me.id ? 'You' : esc(m.name)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td>${wentTd(i)}${famCell(i)}${fam.members.map((m) => `<td class="num ${m.id === state.me.id ? 'me-col' : ''}">${rankCell(i.ranks[String(m.id)])}</td>`).join('')}</tr>${open === i.id && canSetFamilyRank() ? `<tr class="fr-row"><td colspan="${fam.members.length + (isPushed() ? 3 : 2)}">${famRankerHtml(i)}${famSet(i, fam.id) ? `<p class="fr-note">${famSetNote(famSet(i, fam.id))}</p>` : ''}</td></tr>` : ''}`).join('')
         || `<tr><td colspan="${fam.members.length + (isPushed() ? 3 : 2)}" class="empty-state">Nothing matches. Try another filter.</td></tr>`}</tbody>`;
   };
   draw();
+  familyRedraw = draw;
+  document.getElementById('tbl').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-fr]');
+    if (!b) return;
+    open = open === b.dataset.fr ? null : b.dataset.fr;
+    draw();
+    document.querySelector(`[data-fr="${CSS.escape(b.dataset.fr)}"]`)?.focus({ preventScroll: true });
+  });
   wireToolbar(f, 'fi_family', draw);
   wireMyTop();
 }
@@ -1539,7 +1767,7 @@ function renderResults() {
   const f = loadView('fi_results', { q: '', room: '', type: '', view: 'ranked', fam: '', sort: 'best' });
   shell('results', `
     <h1 class="page-title">Results</h1>
-    <p class="page-sub">For each item: the best (lowest) rank anyone gave, which family wants it most, and each family's best rank. Ties are listed together.</p>
+    <p class="page-sub">For each item: the best (lowest) family rank, which family wants it most, and each family's rank. Ties are listed together. “Set” marks a family rank a sibling adjusted by hand.</p>
     ${(() => {
       const fams = state.families.map((fm) => ({ fm, html: familyTopsHtml(fm) })).filter((x) => x.html);
       return fams.length ? `<section class="family-tops admin-tops"><div class="top10-head"><h2 class="section-title">Family top 10s</h2><p class="top10-note">Each family's list adds up its members' lists: 1st place is worth 10 points, 10th is worth 1.</p></div>
@@ -1575,7 +1803,7 @@ function renderResults() {
     document.getElementById('count').textContent = `${rows.length} item${rows.length === 1 ? '' : 's'}`;
     document.getElementById('tbl').innerHTML = `
       <thead><tr><th>Item</th><th class="num key">Best</th><th class="key">Most wanted by</th>${state.families.map((fm) => `<th class="num">${esc(fm.name)}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td><td class="num key">${rankCell(i.overall_best)}</td><td class="key who">${esc(i.top_families.map(familyName).join(', '))}</td>${state.families.map((fm) => `<td class="num">${rankCell(i.family_best[String(fm.id)])}</td>`).join('')}</tr>`).join('')
+      <tbody>${rows.map((i) => `<tr><td class="item-cell">${miniItem(i)}</td><td class="num key">${rankCell(i.overall_best)}</td><td class="key who">${esc(i.top_families.map(familyName).join(', '))}</td>${state.families.map((fm) => { const set = famSet(i, fm.id); return `<td class="num fr"${set ? ` title="Set by ${esc(set.by)}${set.auto != null ? `; automatic ${set.auto}` : ''}"` : ''}>${rankCell(i.family_best[String(fm.id)])}${set ? '<span class="fr-set">set</span>' : ''}</td>`; }).join('')}</tr>`).join('')
         || `<tr><td colspan="${state.families.length + 3}" class="empty-state">Nothing matches. Try another filter.</td></tr>`}</tbody>`;
   };
   draw();
@@ -1585,8 +1813,8 @@ function renderResults() {
 
 function downloadCsv() {
   const people = state.families.flatMap((f) => f.members.map((m) => ({ ...m, fam: f })));
-  const head = ['Item ID', 'Name', 'Room', 'Photo #', 'Type', 'Subtype', 'Origin', 'Description', 'Hidden',
-    ...people.map((p) => `${p.fam.name}: ${p.name}`), ...state.families.map((f) => `${f.name} best`), 'Overall best', 'Top interest', 'Assigned (draft)', 'Went to (pushed)'];
+  const head = ['Item ID', 'Name', 'Room', 'Photo #', 'Type', 'Subtype', 'Origin', 'Description',
+    ...people.map((p) => `${p.fam.name}: ${p.name}`), ...state.families.map((f) => `${f.name} family rank`), ...state.families.map((f) => `${f.name} set by`), 'Overall best', 'Top interest', 'Assigned (draft)', 'Went to (pushed)'];
   const cell = (v) => {
     let s = String(v ?? '');
     // Keep spreadsheet apps from running a value as a formula.
@@ -1595,8 +1823,9 @@ function downloadCsv() {
   };
   const lines = [head.map(cell).join(',')];
   for (const i of state.items) {
-    lines.push([i.id, i.name, i.room, i.photo_no, i.type, i.subtype, i.origin, i.description, i.hidden ? 'yes' : '',
+    lines.push([i.id, i.name, i.room, i.photo_no, i.type, i.subtype, i.origin, i.description,
       ...people.map((p) => i.ranks[String(p.id)] ?? ''), ...state.families.map((f) => i.family_best[String(f.id)] ?? ''),
+      ...state.families.map((f) => famSet(i, f.id)?.by ?? ''),
       i.overall_best ?? '', i.top_families.map(familyName).join(' & '),
       i.assigned != null ? familyName(i.assigned) : '', i.went_to != null ? familyName(i.went_to) : ''].map(cell).join(','));
   }
@@ -1608,165 +1837,13 @@ function downloadCsv() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-// ------------------------------------------------------------------ add info
-//
-// One item at a time, with a big photo and every field ready to type in.
-// Items with a suggestion written from the photo come prefilled; nothing is
-// saved until the editor taps Save.
-
-const FILL = 'fi_fill';
-function loadFill() {
-  const blank = { show: 'needs', room: '', q: '', at: '' };
-  try { return { ...blank, ...JSON.parse(getStored(FILL, 'sessionStorage') || '{}') }; } catch { return blank; }
-}
-
-function fillQueue(f) {
-  const q = f.q.trim().toLowerCase();
-  return state.items.filter((i) => {
-    const n = needs(i);
-    if (f.room && i.room !== f.room) return false;
-    if (q && !`${i.name} ${i.id} ${i.room} ${i.type} ${i.description}`.toLowerCase().includes(q)) return false;
-    if (f.show === 'needs') return n.name || n.type || n.description;
-    if (f.show === 'name') return n.name;
-    if (f.show === 'type') return n.type;
-    if (f.show === 'description') return n.description;
-    if (f.show === 'draft') return !!i.draft;
-    return true;
-  });
-}
-
-function renderFill() {
-  if (!state.me.is_editor) { location.hash = '#/'; return; }
-  const f = loadFill();
-  const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
-  const counts = state.items.reduce((c, i) => { const n = needs(i); c.name += n.name; c.type += n.type; c.description += n.description; c.draft += !!i.draft; return c; }, { name: 0, type: 0, description: 0, draft: 0 });
-  shell('fill', `
-    <h1 class="page-title">Add info</h1>
-    <p class="page-sub">${counts.name} items still need a name, ${counts.type} need a type and ${counts.description} need a description.
-      ${counts.draft ? `${counts.draft} have a suggestion written from the photo for you to check.` : ''}</p>
-    <div class="toolbar">
-      <input class="input search" type="search" placeholder="Search by name, room or ID" value="${esc(f.q)}" data-f="q" aria-label="Search" />
-      <div class="row">
-        <select class="select" data-f="show" aria-label="Show">
-          ${opt('needs', 'Anything missing', f.show)}${opt('draft', 'Has a suggestion', f.show)}${opt('name', 'Needs a name', f.show)}${opt('type', 'Needs a type', f.show)}${opt('description', 'Needs a description', f.show)}${opt('all', 'All items', f.show)}
-        </select>
-        <select class="select" data-f="room" aria-label="Room">${opt('', 'All rooms', f.room)}${rooms().map((r) => opt(r, r, f.room)).join('')}</select>
-      </div>
-    </div>
-    <div id="fill"></div>`);
-
-  const save = () => setStored(FILL, JSON.stringify(f), 'sessionStorage');
-  let queue = fillQueue(f);
-
-  const draw = () => {
-    const box = document.getElementById('fill');
-    if (!box) return;
-    if (!queue.length) {
-      box.innerHTML = `<div class="empty-state"><p>Nothing left here. ${f.show === 'all' ? '' : 'Try "All items" to look through everything.'}</p></div>`;
-      return;
-    }
-    let idx = queue.findIndex((i) => i.id === f.at);
-    if (idx < 0) { idx = 0; f.at = queue[0].id; save(); }
-    const item = queue[idx];
-    const d = item.draft || {};
-    const val = (k) => (k === 'name' ? (isPlaceholderName(item) ? (d.name || '') : item.name) : (item[k] || d[k] || ''));
-    const fromDraft = (k) => item.draft && d[k] && (k === 'name' ? isPlaceholderName(item) : !item[k]);
-    const p = photoOf(item);
-    const mark = (k) => (fromDraft(k) ? ' <span class="suggested">suggested</span>' : '');
-    box.innerHTML = `
-      <p class="count">${idx + 1} of ${queue.length}</p>
-      <div class="fill-item" data-id="${esc(item.id)}">
-        <div class="fill-photo">${p?.full ? `<img src="${esc(p.full)}" alt="${esc(item.name)}" />` : '<div class="placeholder">Photo coming</div>'}</div>
-        <form class="fill-form" autocomplete="off">
-          <div class="eyebrow">${esc(item.room)}${item.photo_no ? ` · Photo ${esc(item.photo_no)}` : ''} · <a href="#/item/${esc(item.id)}">${esc(item.id)}</a></div>
-          ${item.draft ? '<p class="draft-note">Suggested from the photo. Check it, fix anything that is wrong, then save.</p>' : ''}
-          ${isPlaceholderName(item) ? `<p class="now">Now called “${esc(item.name)}”</p>` : ''}
-          <label>Name${mark('name')}<input class="input" name="name" value="${esc(val('name'))}" placeholder="For example: Blue and white teapot" /></label>
-          <label class="fill-type">Type${mark('type')}${typeSelectHtml(val('type'))}</label>
-          <label class="fill-type">Subtype${mark('subtype')}${subtypeSelectHtml(val('subtype'), val('type'))}</label>
-          <label>Origin<input class="input" name="origin" value="${esc(item.origin)}" placeholder="Where it came from, who made it" /></label>
-          <label>Description${mark('description')}<textarea class="input" name="description" rows="4">${esc(val('description'))}</textarea></label>
-          <p class="conflict-note" hidden></p>
-          <div class="fill-actions">
-            <button type="submit" class="btn">Save and next</button>
-            <button type="button" class="btn ghost" data-go="1">Skip</button>
-            ${idx > 0 ? '<button type="button" class="btn ghost" data-go="-1">Back</button>' : ''}
-            ${item.draft ? '<button type="button" class="link-btn" data-discard>Suggestion is wrong, discard it</button>' : ''}
-          </div>
-        </form>
-      </div>`;
-    const form = box.querySelector('form');
-    form.querySelector('[name="name"]').focus({ preventScroll: true });
-
-    const go = (step) => {
-      const at = queue.findIndex((i) => i.id === item.id);
-      queue = fillQueue(f);
-      const pos = queue.findIndex((i) => i.id === item.id);
-      const next = pos >= 0 ? queue[pos + step] : queue[Math.max(0, Math.min(at, queue.length - 1) + (step < 0 ? -1 : 0))];
-      f.at = (next || queue[0])?.id || '';
-      save();
-      draw();
-      window.scrollTo(0, 0);
-    };
-    box.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.go))));
-    box.querySelector('[data-discard]')?.addEventListener('click', async () => {
-      try { await state.api.draftDone(item.id, 'dismissed'); item.draft = null; toast('Suggestion discarded'); draw(); }
-      catch (err) { if (state.me) toast(err.message, true); }
-    });
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = form.querySelector('[type="submit"]');
-      const note = form.querySelector('.conflict-note');
-      const want = {
-        name: form.elements.namedItem('name').value.trim(),
-        type: typeValue(form),
-        subtype: pickValue(form, 'subtype'),
-        origin: form.elements.namedItem('origin').value.trim(),
-        description: form.elements.namedItem('description').value.trim(),
-      };
-      if (!want.name) want.name = item.name; // a blank name keeps the old one
-      btn.disabled = true;
-      try {
-        for (const [k, v] of Object.entries(want)) {
-          if (v === (item[k] || '')) continue;
-          const res = await state.api.editItem(item.id, k, v, item[k] || '');
-          item[k] = res.value;
-          if (res.conflict) {
-            note.hidden = false;
-            note.textContent = `${res.by || 'Someone'} changed the ${k} while you were working. It now says “${res.value || '—'}”. Check it, then tap Save again.`;
-            const field = k === 'type' ? null : form.querySelector(`[name="${k}"]`);
-            if (field) field.value = res.value || '';
-            btn.disabled = false;
-            return;
-          }
-        }
-        if (item.draft) { await state.api.draftDone(item.id, 'used'); item.draft = null; }
-        toast('Saved');
-        go(1);
-      } catch (err) {
-        if (state.me) toast(err.message, true);
-        btn.disabled = false;
-      }
-    });
-  };
-  draw();
-
-  let t;
-  app.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('input', () => {
-    f[el.dataset.f] = el.value;
-    save();
-    clearTimeout(t);
-    t = setTimeout(() => { queue = fillQueue(f); draw(); }, el.dataset.f === 'q' ? 200 : 0);
-  }));
-}
-
 // ------------------------------------------------------------------ admin
 
 async function renderAdmin() {
   if (!state.me.is_admin) { location.hash = '#/'; return; }
   shell('admin', `
     <h1 class="page-title">Admin</h1>
-    <p class="page-sub">Make a personal link for each person and send it by text or email. Making a new link turns off that person's old one. "Can add info" lets someone name and describe items: the Add info screen and the Edit buttons on each item. Nobody else can change item details.</p>
+    <p class="page-sub">Make a personal link for each person and send it by text or email. Making a new link turns off that person's old one. The four siblings can edit item details (Edit info in Browse) and adjust their family's ranks. Children rank and keep a top 10.</p>
     <div class="admin-sections">
       <section>
         <div class="eyebrow" style="margin-bottom:8px">People</div>
@@ -1775,7 +1852,10 @@ async function renderAdmin() {
       </section>
       <section>
         <div class="eyebrow" style="margin-bottom:8px">Items</div>
-        <p style="font-size:14px;color:var(--muted)">${state.items.length} items, ${state.items.filter((i) => i.hidden).length} hidden. Open any item to edit it or hide it. Download everything from <a href="#/results">Results</a>.</p>
+        <p style="font-size:14px;color:var(--muted)">${state.items.length} items on the website. Open any item to edit it or remove it. Download everything from <a href="#/results">Results</a>.</p>
+        <div class="eyebrow" style="margin:20px 0 8px">Removed items</div>
+        <p style="font-size:14px;color:var(--muted)">Removed items are off the website for everyone, you included, but stay in the database with their ranks and history. Restore puts one back.</p>
+        <ul class="removed" id="removed"><li class="loading">Loading…</li></ul>
       </section>
     </div>`);
 
@@ -1788,14 +1868,13 @@ async function renderAdmin() {
       <div class="person" data-id="${p.id}">
         <div>
           <div class="n">${esc(p.name)}</div>
-          <div class="d">${esc(p.family ? `${p.family}'s family · ${p.role}` : p.role)}${p.is_admin && p.role !== 'admin' ? ' · admin' : ''} ·
+          <div class="d">${esc(p.family ? `${p.family}'s family · ${p.role}` : 'site admin')}${p.is_admin && p.role !== 'admin' ? ' · admin' : ''} ·
             ${p.has_link ? (p.last_seen_at ? `last opened ${esc(fmtDate(p.last_seen_at))}` : 'link not opened yet') : 'no link yet'}
             · ${p.ranked} ranked</div>
         </div>
         <div class="actions">
           <button type="button" class="btn small ${p.has_link ? 'ghost' : ''}" data-new="${p.id}">${p.has_link ? 'New link' : 'Make link'}</button>
           ${p.has_link && p.id !== state.me.id ? `<button type="button" class="btn ghost small" data-off="${p.id}">Turn off</button>` : ''}
-          ${p.is_admin ? '' : `<button type="button" class="chip" data-editor="${p.id}" aria-pressed="${!!p.is_editor}">Can add info</button>`}
         </div>
       </div>`).join('');
     for (const [id, el] of panels) box.querySelector(`.person[data-id="${id}"]`)?.append(el);
@@ -1807,6 +1886,7 @@ async function renderAdmin() {
       `${rankers.filter((p) => p.has_link).length} of ${rankers.length} family members have a link, ${opened} have opened it, `
       + `and ${started} have started ranking (${total} ranks in all).`;
   };
+  drawRemoved();
   try {
     people = await state.api.adminPeople();
     draw();
@@ -1818,17 +1898,6 @@ async function renderAdmin() {
   box.addEventListener('click', async (e) => {
     const nb = e.target.closest('[data-new]');
     const ob = e.target.closest('[data-off]');
-    const eb = e.target.closest('[data-editor]');
-    if (eb) {
-      const p = people.find((x) => x.id === Number(eb.dataset.editor));
-      try {
-        await state.api.adminSetEditor(p.id, !p.is_editor);
-        p.is_editor = !p.is_editor;
-        eb.setAttribute('aria-pressed', String(p.is_editor));
-        toast(p.is_editor ? `${p.name} can now use Add info` : `${p.name} no longer sees Add info`);
-      } catch (err) { if (state.me) toast(err.message, true); }
-      return;
-    }
     if (nb) {
       const p = people.find((x) => x.id === Number(nb.dataset.new));
       if (p.has_link && !confirmInline(nb, `This turns off ${p.name}'s current link. Tap again to continue.`)) return;
@@ -1886,6 +1955,33 @@ async function renderAdmin() {
   }
 }
 
+// The Admin page's list of removed items, each with Restore.
+async function drawRemoved() {
+  const ul = document.getElementById('removed');
+  if (!ul) return;
+  let list;
+  try { list = await state.api.adminRemovedItems(); }
+  catch (err) { ul.innerHTML = `<li>${esc(err.message)}</li>`; return; }
+  if (!document.body.contains(ul)) return;
+  ul.innerHTML = list.length ? list.map((r) => `
+    <li>
+      ${r.thumb ? `<img src="${esc(r.thumb)}" alt="" loading="lazy" />` : '<span class="ph"></span>'}
+      <span class="t"><b>${esc(r.name)}</b><br><span class="s">${esc(r.id)} · ${esc(r.room)}${r.at ? ` · removed ${esc(fmtDate(r.at))}${r.by ? ` by ${esc(r.by)}` : ''}` : ''}</span></span>
+      <button type="button" class="btn ghost small" data-unremove="${esc(r.id)}">Restore</button>
+    </li>`).join('') : '<li class="none">Nothing has been removed.</li>';
+  ul.onclick = async (e) => {
+    const b = e.target.closest('[data-unremove]');
+    if (!b || !confirmInline(b, `Tap again to put ${b.dataset.unremove} back on the website.`)) return;
+    b.disabled = true;
+    try {
+      await state.api.adminSetHidden(b.dataset.unremove, false);
+      ingest(await state.api.load());
+      toast(`${b.dataset.unremove} is back on the website`);
+      renderAdmin();
+    } catch (err) { if (state.me) toast(err.message, true); b.disabled = false; }
+  };
+}
+
 function confirmInline(btn, message) {
   if (btn.dataset.armed === '1') return true;
   btn.dataset.armed = '1';
@@ -1906,7 +2002,6 @@ function currentRoute() {
   if (h === '/results') return { name: 'results' };
   if (h === '/assign') return { name: 'assign' };
   if (h === '/admin') return { name: 'admin' };
-  if (h === '/fill') return { name: 'fill' };
   return { name: 'browse' };
 }
 
@@ -1919,7 +2014,6 @@ function route() {
   else if (r.name === 'results') renderResults();
   else if (r.name === 'assign') renderAssign();
   else if (r.name === 'admin') renderAdmin();
-  else if (r.name === 'fill') renderFill();
   else renderBrowse();
   // Coming back from an item puts the list where it was; anything else starts at the top.
   if (r.name !== 'item') {
@@ -1940,10 +2034,10 @@ window.addEventListener('hashchange', () => {
 async function refresh(force = false) {
   if (!state.api || savesInFlight) return;
   if (!force && Date.now() - state.loadedAt < 120000) return;
-  if (document.querySelector('.edit-box, .new-link, .lightbox')) return;
+  if (document.querySelector('.edit-modal, .new-link, .lightbox, .fr-row')) return;
   try {
     const data = await state.api.load();
-    if (!state.me || savesInFlight || document.querySelector('.edit-box, .new-link, .lightbox')) return;
+    if (!state.me || savesInFlight || document.querySelector('.edit-modal, .new-link, .lightbox, .fr-row')) return;
     const y = window.scrollY;
     const historyOpen = document.getElementById('history')?.hidden === false;
     ingest(data);

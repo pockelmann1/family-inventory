@@ -144,8 +144,20 @@ create table if not exists app.assignments_pushed (
   pushed_at  timestamptz not null default now()
 );
 
--- Editors (for example Susan) get the "Add info" screen and see drafts.
+-- Older flag from when only chosen people could edit item details. Editing is
+-- now open to the admin and every sibling (see app.editor_for); this is unused.
 alter table app.people add column if not exists is_editor boolean not null default false;
+
+-- A sibling's adjustment of their family's rank for an item. Without a row here
+-- the family rank is the lowest number anyone in the family gave.
+create table if not exists app.family_ranks (
+  family_id  int  not null references app.families(id) on delete cascade,
+  item_id    text not null references app.items(id) on delete cascade,
+  rank       smallint not null check (rank between 1 and 5),
+  set_by     int  references app.people(id),
+  set_at     timestamptz not null default now(),
+  primary key (family_id, item_id)
+);
 
 create table if not exists app.import_tokens (
   token_hash  bytea primary key,
@@ -167,7 +179,7 @@ declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
                            'rankings','item_edits','item_drafts','top_picks','stage','assignments',
-                           'assignments_pushed','import_tokens','photo_staging']
+                           'assignments_pushed','family_ranks','import_tokens','photo_staging']
   loop
     execute format('alter table app.%I enable row level security', t);
     execute format('alter table app.%I force row level security', t);
@@ -183,7 +195,7 @@ declare t text;
 begin
   foreach t in array array['families','people','items','photos','item_photos',
                            'rankings','item_edits','item_drafts','top_picks','stage','assignments',
-                           'assignments_pushed','import_tokens','photo_staging']
+                           'assignments_pushed','family_ranks','import_tokens','photo_staging']
   loop
     if not exists (select 1 from pg_policies
                    where schemaname = 'app' and tablename = t and policyname = 'owner_all') then
@@ -199,13 +211,21 @@ on conflict do nothing;
 
 -- ---------------------------------------------------------------- results view
 
+-- The family rank is the lowest number anyone in the family gave, unless a
+-- sibling has set it (app.family_ranks).
 create or replace view app.item_results as
-with fam as (
+with auto as (
   select r.item_id, p.family_id, min(r.rank) as best
   from app.rankings r
   join app.people p on p.id = r.person_id
   where p.family_id is not null
   group by r.item_id, p.family_id
+),
+fam as (
+  select coalesce(a.item_id, o.item_id) as item_id, coalesce(a.family_id, o.family_id) as family_id,
+         coalesce(o.rank, a.best) as best
+  from auto a
+  full join app.family_ranks o on o.item_id = a.item_id and o.family_id = a.family_id
 ),
 ov as (
   select item_id, min(best) as overall from fam group by item_id
@@ -265,8 +285,9 @@ returns app.people language plpgsql stable security definer set search_path = ''
 declare v app.people;
 begin
   v := app.person_for(p_key);
-  if not (v.is_admin or v.is_editor) then
-    raise exception 'editors only' using errcode = '42501';
+  -- The admin and the four siblings may change item details; children may not.
+  if not (v.is_admin or v.role = 'sibling') then
+    raise exception 'Only the admin and the siblings can change item details.' using errcode = '42501';
   end if;
   return v;
 end $$;
@@ -279,6 +300,34 @@ begin
     raise exception 'invalid import token' using errcode = '28000';
   end if;
 end $$;
+
+-- Family ranks set by a sibling for one item: { family_id: {rank, by, at, auto} },
+-- where auto is what the family rank would be without the adjustment.
+-- p_family limits it to one family (null = every family, for the admin).
+create or replace function app.family_set(p_item text, p_family int)
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select coalesce(jsonb_object_agg(o.family_id::text, jsonb_build_object(
+           'rank', o.rank, 'by', coalesce(sp.name, ''), 'at', o.set_at,
+           'auto', (select min(r.rank) from app.rankings r join app.people rp on rp.id = r.person_id
+                    where r.item_id = o.item_id and rp.family_id = o.family_id))), '{}'::jsonb)
+  from app.family_ranks o left join app.people sp on sp.id = o.set_by
+  where o.item_id = p_item and (p_family is null or o.family_id = p_family)
+$$;
+
+-- One item's ranks as one family sees them (the same shape as fi_load's item fields).
+create or replace function app.family_view(p_item text, p_family int)
+returns jsonb language sql stable security definer set search_path = '' as $$
+  select jsonb_build_object(
+           'ranks', coalesce((select jsonb_object_agg(r.person_id::text, r.rank)
+                              from app.rankings r join app.people rp on rp.id = r.person_id
+                              where r.item_id = p_item and rp.family_id = p_family), '{}'::jsonb),
+           'family_best', coalesce((select jsonb_object_agg(k, v) from jsonb_each(res.family_best) as fb(k, v)
+                                    where k = p_family::text), '{}'::jsonb),
+           'family_set', app.family_set(p_item, p_family),
+           'overall_best', null,
+           'top_families', '[]'::jsonb)
+  from app.item_results res where res.item_id = p_item
+$$;
 
 -- ---------------------------------------------------------------- public API
 
@@ -295,7 +344,7 @@ begin
   select jsonb_build_object(
     'me', jsonb_build_object('id', me.id, 'name', me.name, 'role', me.role,
                              'family_id', me.family_id, 'is_admin', me.is_admin,
-                             'is_editor', me.is_admin or me.is_editor),
+                             'is_editor', me.is_admin or me.role = 'sibling'),
     'families', coalesce((
       select jsonb_agg(jsonb_build_object(
                'id', f.id, 'name', f.name,
@@ -327,6 +376,8 @@ begin
                'family_best', case when me.is_admin then res.family_best
                                    else coalesce((select jsonb_object_agg(k, v) from jsonb_each(res.family_best) as fb(k, v)
                                                   where k = me.family_id::text), '{}'::jsonb) end,
+               -- Family ranks a sibling set by hand: { family_id: {rank, by, auto} }.
+               'family_set', app.family_set(i.id, case when me.is_admin then null else me.family_id end),
                'overall_best', case when me.is_admin then res.overall_best end,
                'top_families', case when me.is_admin then res.top_families else '[]'::jsonb end,
                -- Where the item went, once the admin has pushed assignments (everyone sees this).
@@ -336,11 +387,12 @@ begin
                'draft', (select jsonb_build_object('name', d.name, 'type', d.type,
                                                    'subtype', d.subtype, 'description', d.description)
                          from app.item_drafts d
-                         where d.item_id = i.id and d.status = 'open' and (me.is_admin or me.is_editor)))
+                         where d.item_id = i.id and d.status = 'open' and (me.is_admin or me.role = 'sibling')))
              order by i.sort, i.id)
       from app.items i
       join app.item_results res on res.item_id = i.id
-      where me.is_admin or not i.hidden), '[]'::jsonb),
+      -- Removed items (hidden) are off the website for everyone, the admin included.
+      where not i.hidden), '[]'::jsonb),
     'stage', (select jsonb_build_object('ranking_open', st.ranking_open, 'closed_at', st.closed_at,
                                         'pushed_at', st.pushed_at, 'push_count', st.push_count)
               from app.stage st where st.id = 1),
@@ -351,7 +403,7 @@ begin
             from app.top_picks tp
             join app.people pp on pp.id = tp.person_id
             join app.items ti on ti.id = tp.item_id
-            where (me.is_admin or pp.family_id = me.family_id) and (me.is_admin or not ti.hidden)
+            where (me.is_admin or pp.family_id = me.family_id) and not ti.hidden
             group by tp.person_id) t), '{}'::jsonb)
   ) into result;
   return result;
@@ -412,7 +464,6 @@ create or replace function public.fi_set_rank(p_key text, p_item text, p_rank in
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
   me app.people;
-  res jsonb;
 begin
   me := app.person_for(p_key);
   if me.family_id is null then
@@ -440,17 +491,37 @@ begin
   end if;
 
   -- Same rule as fi_load: only the caller's own family's ranks come back.
-  select jsonb_build_object(
-           'ranks', coalesce((select jsonb_object_agg(r.person_id::text, r.rank)
-                              from app.rankings r join app.people rp on rp.id = r.person_id
-                              where r.item_id = p_item and rp.family_id = me.family_id), '{}'::jsonb),
-           'family_best', coalesce((select jsonb_object_agg(k, v) from jsonb_each(res2.family_best) as fb(k, v)
-                                    where k = me.family_id::text), '{}'::jsonb),
-           'overall_best', null,
-           'top_families', '[]'::jsonb)
-    into res
-  from app.item_results res2 where res2.item_id = p_item;
-  return res;
+  return app.family_view(p_item, me.family_id);
+end $$;
+
+-- A sibling sets (1..5) their family's rank for an item, or clears it (null) so
+-- it goes back to the lowest number anyone in the family gave. Everyone's own
+-- ranks stay as they are. Children cannot do this.
+create or replace function public.fi_set_family_rank(p_key text, p_item text, p_rank int)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare
+  me app.people;
+begin
+  me := app.person_for(p_key);
+  if me.role <> 'sibling' or me.family_id is null then
+    raise exception 'Only the siblings can adjust a family rank.' using errcode = '42501';
+  end if;
+  if not app.ranking_open() then
+    raise exception 'Ranking is closed, so ranks and top 10s can no longer change.' using errcode = '55000';
+  end if;
+  if not exists (select 1 from app.items where id = p_item and not hidden) then
+    raise exception 'unknown item' using errcode = 'P0002';
+  end if;
+  if p_rank is null then
+    delete from app.family_ranks where family_id = me.family_id and item_id = p_item;
+  elsif p_rank between 1 and 5 then
+    insert into app.family_ranks (family_id, item_id, rank, set_by)
+    values (me.family_id, p_item, p_rank, me.id)
+    on conflict (family_id, item_id) do update set rank = excluded.rank, set_by = excluded.set_by, set_at = now();
+  else
+    raise exception 'rank must be 1 to 5' using errcode = '22023';
+  end if;
+  return app.family_view(p_item, me.family_id);
 end $$;
 
 -- ------------------------------------------------------------- assignments
@@ -557,14 +628,14 @@ declare
                   regexp_replace(coalesce(p_value, ''), '[\x01-\x09\x0b-\x1f\x7f]', '', 'g'),
                   '^\s+|\s+$', '', 'g'), 4000);
 begin
-  me := app.editor_for(p_key); -- only the admin and people marked "Can add info" may change item details
+  me := app.editor_for(p_key); -- only the admin and the siblings may change item details
   if p_field not in ('name', 'type', 'subtype', 'origin', 'description') then
     raise exception 'field cannot be edited' using errcode = '22023';
   end if;
   if p_field = 'name' and new_v = '' then
     raise exception 'name cannot be empty' using errcode = '22023';
   end if;
-  if not exists (select 1 from app.items where id = p_item and (me.is_admin or not hidden)) then
+  if not exists (select 1 from app.items where id = p_item and not hidden) then
     raise exception 'unknown item' using errcode = 'P0002';
   end if;
   execute format('select %I from app.items where id = $1 for update', p_field) into old_v using p_item;
@@ -589,7 +660,7 @@ returns jsonb language plpgsql stable security definer set search_path = '' as $
 declare me app.people;
 begin
   me := app.person_for(p_key);
-  if not exists (select 1 from app.items where id = p_item and (me.is_admin or not hidden)) then
+  if not exists (select 1 from app.items where id = p_item and not hidden) then
     raise exception 'unknown item' using errcode = 'P0002';
   end if;
   return coalesce((
@@ -666,6 +737,25 @@ begin
   end if;
 end $$;
 
+-- Items removed from the website (kept in the database so they can come back).
+create or replace function public.fi_admin_removed_items(p_key text)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+begin
+  perform app.admin_for(p_key);
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'id', i.id, 'name', i.name, 'room', i.room,
+             'thumb', (select ph.thumb_url from app.item_photos ip join app.photos ph on ph.id = ip.photo_id
+                       where ip.item_id = i.id order by ip.sort_order limit 1),
+             'at', e.at, 'by', coalesce(p.name, ''))
+           order by i.sort, i.id)
+    from app.items i
+    left join lateral (select * from app.item_edits x where x.item_id = i.id and x.field = 'hidden'
+                       order by x.at desc, x.id desc limit 1) e on true
+    left join app.people p on p.id = e.person_id
+    where i.hidden), '[]'::jsonb);
+end $$;
+
 create or replace function public.fi_admin_set_editor(p_key text, p_person int, p_editor boolean)
 returns void language plpgsql volatile security definer set search_path = '' as $$
 begin
@@ -708,6 +798,9 @@ begin
   update app.item_drafts set status = p_status, decided_by = me.id, decided_at = now()
   where item_id = p_item and status = 'open';
 end $$;
+
+-- The admin account shows as "Admin" everywhere (header, edit history, Admin page).
+update app.people set name = 'Admin' where role = 'admin' and is_admin and name <> 'Admin';
 
 -- ---------------------------------------------------------------- keep-alive
 

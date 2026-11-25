@@ -27,10 +27,11 @@
   place the key is ever shown.
 - **Turn off.** That person's link stops working at once; an open tab signs
   out on its next action.
-- **Can add info.** Gives that person the Add info screen, the Edit buttons on
-  each item, and the photo suggestions. Only people with it (and the admin) can
-  change an item's name, type, subtype, origin or description; the database
-  refuses edits from anyone else. The admin always has it.
+- Who can do what comes from each person's role: the four siblings (and the
+  admin) can edit item details and adjust their own family's ranks; children
+  rank and keep a top 10. There is nothing to switch on per person.
+- **Removed items** (bottom of the page) lists items taken off the website,
+  with who removed them and when, and **Restore** for each.
 - The summary line shows how many family members have a link, have opened it
   and have started ranking.
 
@@ -54,13 +55,23 @@ only make one if the old link is lost or was shared.
   **Push update**. Families only ever see the last push.
 - Results' CSV download includes the draft family and the pushed family.
 
-## Hiding an item
+## Removing an item
 
-Open the item and use **Hide this item** in the Admin section. Hidden items
-disappear for everyone except the admin (they are still in the CSV download,
-marked "yes" under Hidden). Ranks on a hidden item are kept, and the item can
-be shown again with the same button. The change is recorded in the item's edit
+Open the item and use **Remove from website** in the Admin section (tap
+twice). The item disappears for everyone, the admin included: Browse, My
+family, Results, Assign, top 10s and the CSV. It stays in the database
+(`items.hidden = true`) with its ranks and history. Put it back from Admin →
+Removed items → **Restore**. Both steps are recorded in the item's edit
 history.
+
+## Downloading photos
+
+Browse → **Download all photos** (or **Download photos of these N** after a
+search or filter, for example Type: Ceramics). Everyone has it. It saves one
+zip file of the website-size photos (1024 pixels on the long side, about
+0.1 MB each), named like `ITEM-0005 Teapot (top).jpg`; items with more than
+one photo get `- photo 2` and so on. The full-resolution originals stay in
+Google Drive.
 
 ## Downloading everything
 
