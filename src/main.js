@@ -499,7 +499,7 @@ function renderWhoRanked(item) {
   }).join('');
 }
 
-// "Set by Susan. Automatically it would be 1."
+// "Set by <sibling>. Automatically it would be 1."
 function famSetNote(set) {
   return `Set by ${esc(set.by || 'a sibling')}. ${set.auto != null ? `Automatically it would be ${set.auto}.` : 'Nobody in the family has ranked it.'}`;
 }

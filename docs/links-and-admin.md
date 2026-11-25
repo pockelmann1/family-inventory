@@ -69,7 +69,7 @@ history.
 Browse → **Download all photos** (or **Download photos of these N** after a
 search or filter, for example Type: Ceramics). Everyone has it. It saves one
 zip file of the website-size photos (1024 pixels on the long side, about
-0.1 MB each), named like `ITEM-0005 Teapot (top).jpg`; items with more than
+0.1 MB each), named like `ITEM-0001 <item name>.jpg`; items with more than
 one photo get `- photo 2` and so on. The full-resolution originals stay in
 Google Drive.
 
